@@ -31,8 +31,10 @@ export type DebateStepAction =
 export type ParseSourceResponse = {
   claim: string;
   tensions: string[];
+  tensionEvidence?: string[];
   openQuestions: string[];
   sourceTitle?: string;
   sourceExcerpt?: string;
-  mode?: "fetched" | "fallback" | "text";
+  mode?: "llm" | "heuristic" | "fallback";
+  warning?: string;
 };

@@ -12,13 +12,16 @@ Local-first pilot environment for creating and running live AI debate episodes.
 
 1. Install dependencies:
    - `npm install`
-2. Optional: set database URL (default is local SQLite):
+2. Set environment variables:
+   - `OPENAI_API_KEY=...` (required for real LLM analysis/debate generation)
+   - `OPENAI_MODEL=gpt-5-mini` (optional override)
+3. Optional: set database URL (default is local SQLite):
    - `DATABASE_URL="file:./prisma/dev.db"`
-3. Generate Prisma client:
+4. Generate Prisma client:
    - `npm run prisma:generate`
-4. Create SQLite schema:
+5. Create SQLite schema:
    - `npm run prisma:migrate`
-5. Start app:
+6. Start app:
    - `npm run dev`
 
 Open [http://localhost:3000](http://localhost:3000).
@@ -30,6 +33,15 @@ Open [http://localhost:3000](http://localhost:3000).
 3. `/export/[id]`: generate export pack in `exports/<episodeId>/`.
 
 Legacy routes `/intake` and `/cast` now redirect to `/new-show`.
+
+If `OPENAI_API_KEY` is missing or an LLM call fails, the app falls back to deterministic heuristics/templates.
+
+## LLM Analysis Notes
+
+- Source analysis is LLM-first with fallback.
+- Tensions are normalized to 3 concise lines (with optional evidence quotes).
+- If analysis falls back, the UI shows a warning with the concrete failure reason.
+- `gpt-5*` models are supported without `temperature` (the client omits it automatically).
 
 ## Export Files
 

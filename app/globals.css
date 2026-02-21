@@ -191,6 +191,45 @@ main {
   line-height: 1.45;
 }
 
+.monitor-tensions {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.monitor-tensions ul {
+  margin: 0;
+  padding-left: 1.05rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.monitor-tensions li {
+  line-height: 1.35;
+}
+
+.monitor-tensions details {
+  margin-top: 0.2rem;
+}
+
+.monitor-tensions summary {
+  cursor: pointer;
+  color: #18486c;
+}
+
+.monitor-tensions p {
+  margin: 0.25rem 0 0;
+  color: #4e5f6f;
+}
+
+.monitor-warning {
+  border: 1px solid #d8ad6a;
+  background: #fff6e7;
+  color: #6a4308;
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  line-height: 1.35;
+}
+
 .monitor-launch {
   width: 100%;
 }

@@ -1,5 +1,7 @@
 import { db } from "./db";
 import type { DebateStepAction } from "./types";
+import { z } from "zod";
+import { generateJson, llmAvailable } from "./llm";
 
 const MODERATOR_ID = "editor_v1";
 
@@ -63,6 +65,86 @@ function pickLine(lines: string[], count: number): string {
   return lines[count % lines.length] ?? lines[0];
 }
 
+const personaMap: Record<string, string> = {
+  accel_v1: "Accelerationist: scale, capability compounding, deployment urgency.",
+  inst_realist_v1: "Institutional Realist: governance, coordination limits, fragility risks.",
+  labor_v1: "Labor Analyst: worker power, inequality, social cohesion, transition costs.",
+  guest_v1: "Guest Seat: custom perspective tied to creator prompt.",
+  editor_v1: "The Editor moderator: sharp, tempo-driven, forces specificity.",
+  editor_warm_v1: "Diplomatic moderator: calm but incisive, protects clarity."
+};
+
+const turnSchema = z.object({
+  moderatorText: z.string().min(12),
+  speakerId: z.string().min(1),
+  speakerText: z.string().min(16),
+  tags: z.array(z.string()).max(6).optional().default([])
+});
+
+async function generateTurnWithLlm(input: {
+  action: DebateStepAction;
+  claim: string;
+  tensions: string;
+  questions: string;
+  panelistIds: string[];
+  moderatorId: string;
+  guestPrompt: string;
+  recentEvents: Array<{ speakerId: string; text: string; type: string }>;
+  creatorQuestion?: string;
+}) {
+  if (!llmAvailable()) {
+    return null;
+  }
+
+  const recentTranscript = input.recentEvents
+    .slice(-8)
+    .map((event) => `${event.speakerId} (${event.type}): ${event.text}`)
+    .join("\n");
+
+  const personas = [input.moderatorId, ...input.panelistIds]
+    .map((id) => `${id}: ${personaMap[id] ?? "Panel persona"}`)
+    .join("\n");
+
+  const llmTurn = await generateJson(
+    {
+      system: [
+        "You generate one high-quality debate exchange for a live AI roundtable.",
+        "Output strict JSON only.",
+        "Make it sharp, substantive, and slightly witty without becoming theatrical.",
+        "No generic agreement. Push on assumptions and tradeoffs."
+      ].join(" "),
+      user: [
+        `Action: ${input.action}`,
+        `Moderator ID: ${input.moderatorId}`,
+        `Allowed speaker IDs: ${input.panelistIds.join(", ")}`,
+        input.creatorQuestion ? `Creator follow-up: ${input.creatorQuestion}` : "",
+        `Source claim: ${input.claim}`,
+        `Source tensions: ${input.tensions}`,
+        `Open questions: ${input.questions}`,
+        input.guestPrompt ? `Guest prompt: ${input.guestPrompt}` : "",
+        "",
+        "Persona notes:",
+        personas,
+        "",
+        "Recent transcript:",
+        recentTranscript || "No prior turns.",
+        "",
+        "Return JSON with:",
+        "- moderatorText: one intervention/question",
+        "- speakerId: one allowed panelist id",
+        "- speakerText: a concrete response that addresses another viewpoint",
+        "- tags: short tags"
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      temperature: 0.7
+    },
+    turnSchema
+  );
+
+  return llmTurn;
+}
+
 export async function runDebateStep(
   episodeId: string,
   action: DebateStepAction,
@@ -87,22 +169,57 @@ export async function runDebateStep(
     .filter(Boolean);
 
   const speakerTurnCount = episode.events.filter((event) => event.type === "utterance").length;
-  const speakerId = pickNextSpeaker(panelistIds, speakerTurnCount);
-  const baseText = pickLine(speakerTemplates[speakerId] ?? [], speakerTurnCount);
+  const effectiveModeratorId = episode.moderatorId || MODERATOR_ID;
+  const moderatorCount = episode.events.filter(
+    (event) => event.speakerId === effectiveModeratorId
+  ).length;
+  let speakerId = pickNextSpeaker(panelistIds, speakerTurnCount);
+  let baseText = pickLine(speakerTemplates[speakerId] ?? [], speakerTurnCount);
+  let moderatorText = pickLine(moderatorTemplates[action], moderatorCount);
+  let tags = [`action:${action}`];
 
-  const moderatorCount = episode.events.filter((event) => event.speakerId === MODERATOR_ID).length;
-  const moderatorText = pickLine(moderatorTemplates[action], moderatorCount);
+  try {
+    const llmTurn = await generateTurnWithLlm({
+      action,
+      claim: episode.parsedClaim,
+      tensions: episode.parsedTensions,
+      questions: episode.parsedQuestions,
+      panelistIds,
+      moderatorId: episode.moderatorId || MODERATOR_ID,
+      guestPrompt: episode.guestPrompt,
+      recentEvents: episode.events.map((event) => ({
+        speakerId: event.speakerId,
+        text: event.text,
+        type: event.type
+      })),
+      creatorQuestion
+    });
+
+    if (llmTurn) {
+      moderatorText = llmTurn.moderatorText;
+      speakerId = panelistIds.includes(llmTurn.speakerId)
+        ? llmTurn.speakerId
+        : speakerId;
+      baseText = llmTurn.speakerText;
+      const llmTags = llmTurn.tags ?? [];
+      if (llmTags.length > 0) {
+        tags = [`action:${action}`, ...llmTags];
+      }
+    }
+  } catch {
+    // Keep deterministic fallback.
+  }
 
   const created = await db.$transaction([
     db.event.create({
       data: {
         episodeId,
         type: "moderator",
-        speakerId: MODERATOR_ID,
+        speakerId: effectiveModeratorId,
         text: creatorQuestion
           ? `${moderatorText} Follow-up: ${creatorQuestion}`
           : moderatorText,
-        tags: `action:${action}`
+        tags: tags.join(",")
       }
     }),
     db.event.create({
@@ -111,7 +228,7 @@ export async function runDebateStep(
         type: "utterance",
         speakerId,
         text: baseText,
-        tags: `action:${action}`
+        tags: tags.join(",")
       }
     }),
     db.episode.update({

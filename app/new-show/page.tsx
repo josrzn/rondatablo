@@ -75,12 +75,12 @@ export default function NewShowPage() {
   const castReady = panelistIds.length >= 2 && panelistIds.length <= 4;
   const canLaunch = sourceReady && castReady && step === 3;
   const modeLabel =
-    parsed.mode === "fetched"
-      ? "Fetched from source"
+    parsed.mode === "llm"
+      ? "LLM analysis"
       : parsed.mode === "fallback"
         ? "Fallback analysis"
-        : parsed.mode === "text"
-          ? "Text analysis"
+        : parsed.mode === "heuristic"
+          ? "Heuristic analysis"
           : "Not analyzed";
 
   function togglePanel(id: string) {
@@ -323,8 +323,28 @@ export default function NewShowPage() {
             <strong>S {Math.round(seriousness * 100)} / H {Math.round(humor * 100)} / C {Math.round(confrontation * 100)}</strong>
           </div>
           <p className="subtle monitor-claim">{parsed.claim || "Analyze source to load claim."}</p>
+          {parsed.warning ? (
+            <p className="monitor-warning">
+              <strong>Warning:</strong> {parsed.warning}
+            </p>
+          ) : null}
           {parsed.tensions.length > 0 ? (
-            <p className="subtle monitor-claim">Tensions: {parsed.tensions.join(" | ")}</p>
+            <div className="monitor-tensions">
+              <strong>Tensions</strong>
+              <ul>
+                {parsed.tensions.map((tension, idx) => (
+                  <li key={`${idx}-${tension.slice(0, 24)}`}>
+                    <span>{tension}</span>
+                    {parsed.tensionEvidence?.[idx] ? (
+                      <details>
+                        <summary>Evidence</summary>
+                        <p>{parsed.tensionEvidence[idx]}</p>
+                      </details>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
           ) : null}
           <div className="row">
             <button className="btn btn-primary monitor-launch" onClick={launchShow} disabled={busy || !canLaunch}>
