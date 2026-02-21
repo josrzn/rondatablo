@@ -73,6 +73,15 @@ export default function NewShowPage() {
 
   const sourceReady = useMemo(() => Boolean(value.trim() && parsed.claim), [value, parsed.claim]);
   const castReady = panelistIds.length >= 2 && panelistIds.length <= 4;
+  const canLaunch = sourceReady && castReady && step === 3;
+  const modeLabel =
+    parsed.mode === "fetched"
+      ? "Fetched from source"
+      : parsed.mode === "fallback"
+        ? "Fallback analysis"
+        : parsed.mode === "text"
+          ? "Text analysis"
+          : "Not analyzed";
 
   function togglePanel(id: string) {
     setPanelistIds((prev) => {
@@ -145,153 +154,188 @@ export default function NewShowPage() {
   return (
     <div className="stack wizard-shell">
       <div className="card stack wizard-hero">
-        <h1>New Show Wizard</h1>
-        <p>From source to live room in three steps.</p>
-        <div className="stepper">
-          <div className={`step-pill ${step >= 1 ? "active" : ""}`}>1. Source</div>
-          <div className={`step-pill ${step >= 2 ? "active" : ""}`}>2. Cast</div>
-          <div className={`step-pill ${step >= 3 ? "active" : ""}`}>3. Review</div>
-        </div>
+        <h1>Show Control Console</h1>
+        <p>Configure this episode on the left, monitor launch readiness on the right.</p>
       </div>
 
-      {step === 1 ? (
-        <div className="card stack">
-          <h2>Step 1: Source Intake</h2>
-          <label>
-            Source type
-            <select value={sourceType} onChange={(e) => setSourceType(e.target.value as SourceType)}>
-              <option value="url">URL</option>
-              <option value="text">Raw text</option>
-            </select>
-          </label>
-          <label>
-            Source
-            <textarea
-              rows={8}
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              placeholder="Paste a URL or text excerpt"
-            />
-          </label>
-          <div className="row">
-            <button className="btn btn-primary" onClick={analyzeSource} disabled={busy || !value.trim()}>
-              {busy ? "Analyzing..." : "Analyze and Continue"}
+      <div className="console-grid">
+        <section className="card stack">
+          <div className="stepper stepper-rail">
+            <button className={`step-pill ${step >= 1 ? "active" : ""}`} onClick={() => setStep(1)}>
+              1. Source
             </button>
-            <Link className="btn btn-secondary" href="/">
-              Cancel Setup
-            </Link>
+            <button className={`step-pill ${step >= 2 ? "active" : ""}`} onClick={() => sourceReady && setStep(2)} disabled={!sourceReady && step < 2}>
+              2. Cast
+            </button>
+            <button className={`step-pill ${step >= 3 ? "active" : ""}`} onClick={() => castReady && setStep(3)} disabled={!castReady}>
+              3. Review
+            </button>
           </div>
-        </div>
-      ) : null}
 
-      {step === 2 ? (
-        <div className="card stack">
-          <h2>Step 2: Cast and Tone</h2>
-          <p className="subtle">Claim: {parsed.claim}</p>
-          <label>
-            Moderator
-            <select value={moderatorId} onChange={(e) => setModeratorId(e.target.value)}>
-              {Object.entries(PERSONAS)
-                .filter(([, meta]) => meta.type === "moderator")
-                .map(([id, meta]) => (
-                  <option key={id} value={id}>
-                    {meta.label}
-                  </option>
-                ))}
-            </select>
-          </label>
-          <div className="stack">
-            <strong>Panel (2-4)</strong>
-            <div className="persona-grid">
-              {Object.entries(PERSONAS)
-                .filter(([, meta]) => meta.type === "panelist")
-                .map(([id, meta]) => {
-                  const selected = panelistIds.includes(id);
-                  return (
-                    <button
-                      key={id}
-                      type="button"
-                      className={`persona-card ${selected ? "selected" : ""}`}
-                      onClick={() => togglePanel(id)}
-                    >
-                      <span className="persona-title">{meta.label}</span>
-                      <span>{meta.lens}</span>
-                      <span>{meta.vibe}</span>
-                    </button>
-                  );
-                })}
+          {step === 1 ? (
+            <div className="stack">
+              <h2>Source Intake</h2>
+              <label>
+                Source type
+                <select value={sourceType} onChange={(e) => setSourceType(e.target.value as SourceType)}>
+                  <option value="url">URL</option>
+                  <option value="text">Raw text</option>
+                </select>
+              </label>
+              <label>
+                Source
+                <textarea rows={8} value={value} onChange={(e) => setValue(e.target.value)} placeholder="Paste a URL or text excerpt" />
+              </label>
+              <div className="row">
+                <button className="btn btn-primary" onClick={analyzeSource} disabled={busy || !value.trim()}>
+                  {busy ? "Analyzing..." : "Analyze and Continue"}
+                </button>
+                <Link className="btn btn-secondary" href="/">
+                  Exit Console
+                </Link>
+              </div>
             </div>
-          </div>
-          <label>
-            Guest prompt (optional)
-            <textarea rows={2} value={guestPrompt} onChange={(e) => setGuestPrompt(e.target.value)} />
-          </label>
-          <div className="row">
-            {CONTROL_PRESETS.map((preset) => (
-              <button
-                className="btn btn-chip"
-                type="button"
-                key={preset.id}
-                onClick={() => {
-                  setSeriousness(preset.seriousness);
-                  setHumor(preset.humor);
-                  setConfrontation(preset.confrontation);
-                }}
-              >
-                {preset.label}
-              </button>
-            ))}
-          </div>
-          <div className="slider-grid">
-            <label>
-              Seriousness: {Math.round(seriousness * 100)}%
-              <input type="range" min={0} max={1} step={0.05} value={seriousness} onChange={(e) => setSeriousness(Number(e.target.value))} />
-            </label>
-            <label>
-              Humor: {Math.round(humor * 100)}%
-              <input type="range" min={0} max={1} step={0.05} value={humor} onChange={(e) => setHumor(Number(e.target.value))} />
-            </label>
-            <label>
-              Confrontation: {Math.round(confrontation * 100)}%
-              <input type="range" min={0} max={1} step={0.05} value={confrontation} onChange={(e) => setConfrontation(Number(e.target.value))} />
-            </label>
-            <label>
-              Duration (min)
-              <input type="number" min={5} max={60} value={durationMinutes} onChange={(e) => setDurationMinutes(Number(e.target.value))} />
-            </label>
-          </div>
-          <div className="row wizard-actions">
-            <button className="btn btn-secondary" onClick={() => setStep(1)}>
-              Back
-            </button>
-            <button className="btn btn-primary" onClick={() => setStep(3)} disabled={!castReady}>
-              Continue to Review
-            </button>
-          </div>
-        </div>
-      ) : null}
+          ) : null}
 
-      {step === 3 ? (
-        <div className="card stack">
-          <h2>Step 3: Review and Launch</h2>
-          <p><strong>Source:</strong> {value}</p>
-          {parsed.sourceTitle ? <p><strong>Title:</strong> {parsed.sourceTitle}</p> : null}
-          <p><strong>Mode:</strong> {parsed.mode ?? "-"}</p>
-          <p><strong>Claim:</strong> {parsed.claim}</p>
-          <p><strong>Tensions:</strong> {parsed.tensions.join(" | ")}</p>
-          <p><strong>Moderator:</strong> {moderatorId}</p>
-          <p><strong>Panel:</strong> {panelistIds.join(", ")}</p>
-          <p><strong>Tone:</strong> S {Math.round(seriousness * 100)} / H {Math.round(humor * 100)} / C {Math.round(confrontation * 100)}</p>
-          <div className="row wizard-actions">
-            <button className="btn btn-secondary" onClick={() => setStep(2)}>
-              Back
-            </button>
-            <button className="btn btn-primary" onClick={launchShow} disabled={busy || !sourceReady || !castReady}>
-              {busy ? "Launching..." : "Launch Live Show"}
+          {step === 2 ? (
+            <div className="stack">
+              <h2>Cast and Tone</h2>
+              <p className="subtle">Claim: {parsed.claim}</p>
+              <label>
+                Moderator
+                <select value={moderatorId} onChange={(e) => setModeratorId(e.target.value)}>
+                  {Object.entries(PERSONAS)
+                    .filter(([, meta]) => meta.type === "moderator")
+                    .map(([id, meta]) => (
+                      <option key={id} value={id}>
+                        {meta.label}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <div className="stack">
+                <strong>Panel (2-4)</strong>
+                <div className="persona-grid">
+                  {Object.entries(PERSONAS)
+                    .filter(([, meta]) => meta.type === "panelist")
+                    .map(([id, meta]) => {
+                      const selected = panelistIds.includes(id);
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          className={`persona-card ${selected ? "selected" : ""}`}
+                          onClick={() => togglePanel(id)}
+                        >
+                          <span className="persona-title">{meta.label}</span>
+                          <span>{meta.lens}</span>
+                          <span>{meta.vibe}</span>
+                        </button>
+                      );
+                    })}
+                </div>
+              </div>
+              <label>
+                Guest prompt (optional)
+                <textarea rows={2} value={guestPrompt} onChange={(e) => setGuestPrompt(e.target.value)} />
+              </label>
+              <div className="row">
+                {CONTROL_PRESETS.map((preset) => (
+                  <button
+                    className="btn btn-chip"
+                    type="button"
+                    key={preset.id}
+                    onClick={() => {
+                      setSeriousness(preset.seriousness);
+                      setHumor(preset.humor);
+                      setConfrontation(preset.confrontation);
+                    }}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+              <div className="slider-grid">
+                <label>
+                  Seriousness: {Math.round(seriousness * 100)}%
+                  <input type="range" min={0} max={1} step={0.05} value={seriousness} onChange={(e) => setSeriousness(Number(e.target.value))} />
+                </label>
+                <label>
+                  Humor: {Math.round(humor * 100)}%
+                  <input type="range" min={0} max={1} step={0.05} value={humor} onChange={(e) => setHumor(Number(e.target.value))} />
+                </label>
+                <label>
+                  Confrontation: {Math.round(confrontation * 100)}%
+                  <input type="range" min={0} max={1} step={0.05} value={confrontation} onChange={(e) => setConfrontation(Number(e.target.value))} />
+                </label>
+                <label>
+                  Duration (min)
+                  <input type="number" min={5} max={60} value={durationMinutes} onChange={(e) => setDurationMinutes(Number(e.target.value))} />
+                </label>
+              </div>
+              <div className="row wizard-actions">
+                <button className="btn btn-secondary" onClick={() => setStep(1)}>
+                  Back
+                </button>
+                <button className="btn btn-primary" onClick={() => setStep(3)} disabled={!castReady}>
+                  Continue to Review
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {step === 3 ? (
+            <div className="stack">
+              <h2>Review</h2>
+              <p className="subtle">All launch settings are visible in the monitor pane.</p>
+              <div className="row wizard-actions">
+                <button className="btn btn-secondary" onClick={() => setStep(2)}>
+                  Back
+                </button>
+                <button className="btn btn-primary" onClick={launchShow} disabled={busy || !canLaunch}>
+                  {busy ? "Launching..." : "Launch Live Show"}
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </section>
+
+        <aside className="card stack monitor-pane">
+          <h2>Program Monitor</h2>
+          <div className="monitor-item">
+            <span>Analysis mode</span>
+            <strong>{modeLabel}</strong>
+          </div>
+          <div className="monitor-item">
+            <span>Current step</span>
+            <strong>{step}/3</strong>
+          </div>
+          <div className="monitor-item">
+            <span>Moderator</span>
+            <strong>{moderatorId}</strong>
+          </div>
+          <div className="monitor-item">
+            <span>Panel</span>
+            <strong>{panelistIds.join(", ")}</strong>
+          </div>
+          <div className="monitor-item">
+            <span>Tone</span>
+            <strong>S {Math.round(seriousness * 100)} / H {Math.round(humor * 100)} / C {Math.round(confrontation * 100)}</strong>
+          </div>
+          <p className="subtle monitor-claim">{parsed.claim || "Analyze source to load claim."}</p>
+          {parsed.tensions.length > 0 ? (
+            <p className="subtle monitor-claim">Tensions: {parsed.tensions.join(" | ")}</p>
+          ) : null}
+          <div className="row">
+            <button className="btn btn-primary monitor-launch" onClick={launchShow} disabled={busy || !canLaunch}>
+              {busy ? "Launching..." : "Launch from Monitor"}
             </button>
           </div>
-        </div>
-      ) : null}
+          <Link className="btn btn-secondary" href="/">
+            Exit Console
+          </Link>
+        </aside>
+      </div>
 
       {error ? <div className="card"><p>{error}</p></div> : null}
     </div>

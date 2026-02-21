@@ -53,6 +53,13 @@ main {
   gap: 1rem;
 }
 
+.console-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.9fr);
+  gap: 1rem;
+  align-items: start;
+}
+
 .persona-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
@@ -93,6 +100,10 @@ main {
   display: flex;
   gap: 0.5rem;
   flex-wrap: wrap;
+}
+
+.stepper-rail .step-pill {
+  cursor: pointer;
 }
 
 .step-pill {
@@ -159,6 +170,31 @@ main {
   justify-content: space-between;
 }
 
+.monitor-pane {
+  position: sticky;
+  top: 1rem;
+}
+
+.monitor-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-bottom: 1px solid #e4d6bd;
+  padding-bottom: 0.35rem;
+}
+
+.monitor-item span {
+  color: #4f6070;
+}
+
+.monitor-claim {
+  line-height: 1.45;
+}
+
+.monitor-launch {
+  width: 100%;
+}
+
 .cta-link {
   border: 1px solid #0c5186;
   border-radius: 10px;
@@ -200,4 +236,14 @@ a:hover {
 
 .mono {
   font-family: "IBM Plex Mono", "Menlo", monospace;
+}
+
+@media (max-width: 900px) {
+  .console-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .monitor-pane {
+    position: static;
+  }
 }
