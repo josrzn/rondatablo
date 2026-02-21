@@ -25,10 +25,11 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Pilot Flow
 
-1. `/intake`: URL/text input + source parsing.
-2. `/cast`: pick moderator/panel, set controls, create episode.
-3. `/live/[id]`: run live step controls and creator follow-ups.
-4. `/export/[id]`: generate export pack in `exports/<episodeId>/`.
+1. `/new-show`: wizard flow for source intake, cast setup, review, and launch.
+2. `/live/[id]`: run live step controls and creator follow-ups.
+3. `/export/[id]`: generate export pack in `exports/<episodeId>/`.
+
+Legacy routes `/intake` and `/cast` now redirect to `/new-show`.
 
 ## Export Files
 

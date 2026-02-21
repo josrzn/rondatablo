@@ -32,4 +32,7 @@ export type ParseSourceResponse = {
   claim: string;
   tensions: string[];
   openQuestions: string[];
+  sourceTitle?: string;
+  sourceExcerpt?: string;
+  mode?: "fetched" | "fallback" | "text";
 };

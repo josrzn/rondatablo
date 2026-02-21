@@ -16,6 +16,16 @@ export async function POST(req: Request) {
     );
   }
 
-  const result = parseSource(parsed.data.sourceType, parsed.data.value);
+  if (parsed.data.sourceType === "url") {
+    const urlCheck = z.string().url().safeParse(parsed.data.value);
+    if (!urlCheck.success) {
+      return NextResponse.json(
+        { error: "URL source type requires a valid URL." },
+        { status: 400 }
+      );
+    }
+  }
+
+  const result = await parseSource(parsed.data.sourceType, parsed.data.value);
   return NextResponse.json(result);
 }
