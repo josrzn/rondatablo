@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { exportEpisodePack } from "@/lib/exporter";
 
+export const runtime = "nodejs";
+
 type Params = {
   params: Promise<{ id: string }>;
 };

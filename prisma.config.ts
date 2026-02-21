@@ -1,4 +1,8 @@
+import path from "node:path";
 import { defineConfig } from "prisma/config";
+
+const envUrl = process.env.DATABASE_URL?.trim();
+const localDbUrl = `file:${path.resolve(process.cwd(), "prisma", "dev.db")}`;
 
 export default defineConfig({
   schema: "prisma/schema.prisma",
@@ -6,6 +10,6 @@ export default defineConfig({
     path: "prisma/migrations"
   },
   datasource: {
-    url: process.env.DATABASE_URL ?? "file:./prisma/dev.db"
+    url: envUrl && envUrl.length > 0 ? envUrl : localDbUrl
   }
 });

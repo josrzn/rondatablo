@@ -1,4 +1,9 @@
-import { db } from "./db";
+import {
+  createEvent,
+  getEpisodeWithEvents,
+  transaction,
+  updateEpisodeStatus
+} from "./store";
 import type { DebateStepAction } from "./types";
 import { z } from "zod";
 import { generateJson, llmAvailable } from "./llm";
@@ -58,6 +63,18 @@ function pickNextSpeaker(speakers: string[], count: number): string {
   return speakers[count % speakers.length] ?? "accel_v1";
 }
 
+function pickDifferentSpeaker(
+  speakers: string[],
+  excluded: string,
+  count: number
+): string {
+  const filtered = speakers.filter((speaker) => speaker !== excluded);
+  if (filtered.length === 0) {
+    return excluded;
+  }
+  return filtered[count % filtered.length] ?? filtered[0];
+}
+
 function pickLine(lines: string[], count: number): string {
   if (lines.length === 0) {
     return "I need a more specific claim before I can respond.";
@@ -75,9 +92,12 @@ const personaMap: Record<string, string> = {
 };
 
 const turnSchema = z.object({
+  beatType: z.enum(["opening", "clash", "deepen", "commitment", "close"]).optional(),
   moderatorText: z.string().min(12),
   speakerId: z.string().min(1),
   speakerText: z.string().min(16),
+  challengerId: z.string().optional(),
+  challengerText: z.string().min(10).optional(),
   tags: z.array(z.string()).max(6).optional().default([])
 });
 
@@ -108,10 +128,11 @@ async function generateTurnWithLlm(input: {
   const llmTurn = await generateJson(
     {
       system: [
-        "You generate one high-quality debate exchange for a live AI roundtable.",
+        "You generate one high-quality debate beat for a live AI roundtable.",
         "Output strict JSON only.",
         "Make it sharp, substantive, and slightly witty without becoming theatrical.",
-        "No generic agreement. Push on assumptions and tradeoffs."
+        "No generic agreement. Push on assumptions and tradeoffs.",
+        "Avoid repeating prior points; advance the argument."
       ].join(" "),
       user: [
         `Action: ${input.action}`,
@@ -130,9 +151,11 @@ async function generateTurnWithLlm(input: {
         recentTranscript || "No prior turns.",
         "",
         "Return JSON with:",
+        "- beatType: one of opening|clash|deepen|commitment|close",
         "- moderatorText: one intervention/question",
         "- speakerId: one allowed panelist id",
-        "- speakerText: a concrete response that addresses another viewpoint",
+        "- speakerText: a concrete response (2-4 sentences) that addresses another viewpoint",
+        "- challengerId/challengerText: optional short crossfire rebuttal from a different panelist",
         "- tags: short tags"
       ]
         .filter(Boolean)
@@ -150,14 +173,7 @@ export async function runDebateStep(
   action: DebateStepAction,
   creatorQuestion?: string
 ) {
-  const episode = await db.episode.findUnique({
-    where: { id: episodeId },
-    include: {
-      events: {
-        orderBy: { createdAt: "asc" }
-      }
-    }
-  });
+  const episode = getEpisodeWithEvents(episodeId);
 
   if (!episode) {
     throw new Error("Episode not found");
@@ -175,8 +191,10 @@ export async function runDebateStep(
   ).length;
   let speakerId = pickNextSpeaker(panelistIds, speakerTurnCount);
   let baseText = pickLine(speakerTemplates[speakerId] ?? [], speakerTurnCount);
+  let challengerId = pickDifferentSpeaker(panelistIds, speakerId, speakerTurnCount);
+  let challengerText = "";
   let moderatorText = pickLine(moderatorTemplates[action], moderatorCount);
-  let tags = [`action:${action}`];
+  let tags = [`action:${action}`, "beat:clash"];
 
   try {
     const llmTurn = await generateTurnWithLlm({
@@ -201,44 +219,60 @@ export async function runDebateStep(
         ? llmTurn.speakerId
         : speakerId;
       baseText = llmTurn.speakerText;
+      if (
+        llmTurn.challengerId &&
+        llmTurn.challengerText &&
+        panelistIds.includes(llmTurn.challengerId) &&
+        llmTurn.challengerId !== speakerId
+      ) {
+        challengerId = llmTurn.challengerId;
+        challengerText = llmTurn.challengerText;
+      }
       const llmTags = llmTurn.tags ?? [];
+      const beatTag = llmTurn.beatType ? [`beat:${llmTurn.beatType}`] : [];
       if (llmTags.length > 0) {
-        tags = [`action:${action}`, ...llmTags];
+        tags = [`action:${action}`, ...beatTag, ...llmTags];
+      } else if (beatTag.length > 0) {
+        tags = [`action:${action}`, ...beatTag];
       }
     }
   } catch {
     // Keep deterministic fallback.
   }
 
-  const created = await db.$transaction([
-    db.event.create({
-      data: {
-        episodeId,
-        type: "moderator",
-        speakerId: effectiveModeratorId,
-        text: creatorQuestion
-          ? `${moderatorText} Follow-up: ${creatorQuestion}`
-          : moderatorText,
-        tags: tags.join(",")
-      }
-    }),
-    db.event.create({
-      data: {
-        episodeId,
-        type: "utterance",
-        speakerId,
-        text: baseText,
-        tags: tags.join(",")
-      }
-    }),
-    db.episode.update({
-      where: { id: episodeId },
-      data: { status: "live" }
-    })
-  ]);
+  const created = transaction(() => {
+    const moderator = createEvent({
+      episodeId,
+      type: "moderator",
+      speakerId: effectiveModeratorId,
+      text: creatorQuestion
+        ? `${moderatorText} Follow-up: ${creatorQuestion}`
+        : moderatorText,
+      tags: tags.join(",")
+    });
+    const utterance = createEvent({
+      episodeId,
+      type: "utterance",
+      speakerId,
+      text: baseText,
+      tags: tags.join(",")
+    });
+    const challenger = challengerText.trim()
+      ? createEvent({
+          episodeId,
+          type: "crossfire",
+          speakerId: challengerId,
+          text: challengerText,
+          tags: tags.join(",")
+        })
+      : null;
+    updateEpisodeStatus(episodeId, "live");
+    return { moderator, utterance, challenger };
+  });
 
   return {
-    moderator: created[0],
-    utterance: created[1]
+    moderator: created.moderator,
+    utterance: created.utterance,
+    challenger: created.challenger
   };
 }

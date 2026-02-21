@@ -1,17 +1,13 @@
 import { PrismaClient } from "@prisma/client";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
+import path from "node:path";
+import { mkdirSync } from "node:fs";
 
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
-const connectionString = process.env.DATABASE_URL ?? "file:./prisma/dev.db";
-const adapter = new PrismaBetterSqlite3({ url: connectionString });
-
-export const db =
-  globalForPrisma.prisma ??
-  new PrismaClient({
-    adapter,
-    log: ["error", "warn"]
-  });
-
-if (process.env.NODE_ENV !== "production") {
-  globalForPrisma.prisma = db;
-}
+const projectRoot = process.env.INIT_CWD?.trim() || process.cwd();
+const defaultDbPath = path.resolve(projectRoot, "prisma", "dev.db");
+mkdirSync(path.dirname(defaultDbPath), { recursive: true });
+const adapter = new PrismaBetterSqlite3({ url: defaultDbPath });
+export const db = new PrismaClient({
+  adapter,
+  log: ["error", "warn"]
+});

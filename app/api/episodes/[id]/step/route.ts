@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { runDebateStep } from "@/lib/runtime";
 
+export const runtime = "nodejs";
+
 const schema = z.object({
   action: z.enum([
     "normal",

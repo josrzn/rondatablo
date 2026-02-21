@@ -7,6 +7,7 @@ Local-first pilot environment for creating and running live AI debate episodes.
 - Next.js (App Router) + TypeScript
 - Prisma + SQLite
 - Local filesystem exports
+- Runtime persistence currently uses `better-sqlite3` directly for reliability
 
 ## Run
 
@@ -15,8 +16,8 @@ Local-first pilot environment for creating and running live AI debate episodes.
 2. Set environment variables:
    - `OPENAI_API_KEY=...` (required for real LLM analysis/debate generation)
    - `OPENAI_MODEL=gpt-5-mini` (optional override)
-3. Optional: set database URL (default is local SQLite):
-   - `DATABASE_URL="file:./prisma/dev.db"`
+3. Optional DB override:
+   - `DATABASE_URL=...` (defaults to local SQLite `prisma/dev.db`)
 4. Generate Prisma client:
    - `npm run prisma:generate`
 5. Create SQLite schema:
@@ -42,6 +43,15 @@ If `OPENAI_API_KEY` is missing or an LLM call fails, the app falls back to deter
 - Tensions are normalized to 3 concise lines (with optional evidence quotes).
 - If analysis falls back, the UI shows a warning with the concrete failure reason.
 - `gpt-5*` models are supported without `temperature` (the client omits it automatically).
+
+## Persistence Note
+
+- Episode/event runtime persistence currently bypasses Prisma client calls and uses
+  `/Users/jrozen/Jos/Code/rondatablo/lib/store.ts` (direct `better-sqlite3` access).
+- This was introduced as a stability hotfix due to repeated Prisma 7 adapter runtime
+  failures in the API route execution path.
+- Prisma remains in the project (schema/config/deps), but it is not used on the
+  live episode write/read path right now.
 
 ## Export Files
 

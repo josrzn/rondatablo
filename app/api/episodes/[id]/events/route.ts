@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { createEvent, getEventsByEpisode } from "@/lib/store";
+
+export const runtime = "nodejs";
 
 const eventSchema = z.object({
   type: z.string().min(1),
@@ -15,10 +17,7 @@ type Params = {
 
 export async function GET(_req: Request, { params }: Params) {
   const { id } = await params;
-  const events = await db.event.findMany({
-    where: { episodeId: id },
-    orderBy: { createdAt: "asc" }
-  });
+  const events = getEventsByEpisode(id);
   return NextResponse.json(events);
 }
 
@@ -32,14 +31,12 @@ export async function POST(req: Request, { params }: Params) {
     );
   }
 
-  const event = await db.event.create({
-    data: {
-      episodeId: id,
-      type: parsed.data.type,
-      speakerId: parsed.data.speakerId,
-      text: parsed.data.text,
-      tags: parsed.data.tags.join(",")
-    }
+  const event = createEvent({
+    episodeId: id,
+    type: parsed.data.type,
+    speakerId: parsed.data.speakerId,
+    text: parsed.data.text,
+    tags: parsed.data.tags.join(",")
   });
 
   return NextResponse.json(event);

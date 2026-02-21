@@ -1,16 +1,9 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { db } from "./db";
+import { getEpisodeWithEvents } from "./store";
 
 export async function exportEpisodePack(episodeId: string) {
-  const episode = await db.episode.findUnique({
-    where: { id: episodeId },
-    include: {
-      events: {
-        orderBy: { createdAt: "asc" }
-      }
-    }
-  });
+  const episode = getEpisodeWithEvents(episodeId);
 
   if (!episode) {
     throw new Error("Episode not found");

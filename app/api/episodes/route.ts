@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
+import { createEpisode } from "@/lib/store";
+
+export const runtime = "nodejs";
 
 const createEpisodeSchema = z.object({
   source: z.object({
@@ -33,23 +35,50 @@ export async function POST(req: Request) {
   }
 
   const { source, cast, controls } = parsed.data;
-  const episode = await db.episode.create({
-    data: {
-      sourceType: source.type,
-      sourceValue: source.value,
-      parsedClaim: source.parsedClaim,
-      parsedTensions: source.parsedTensions.join(" | "),
-      parsedQuestions: source.parsedQuestions.join(" | "),
-      moderatorId: cast.moderatorId,
-      panelistIds: cast.panelistIds.join(","),
-      guestPrompt: cast.guestPrompt ?? "",
-      seriousness: controls.seriousness,
-      humor: controls.humor,
-      confrontation: controls.confrontation,
-      durationMinutes: controls.durationMinutes,
-      status: "draft"
-    }
-  });
+  const data = {
+    sourceType: String(source.type ?? "text"),
+    sourceValue: String(source.value ?? ""),
+    parsedClaim: String(source.parsedClaim ?? ""),
+    parsedTensions: (source.parsedTensions ?? [])
+      .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      .join(" | "),
+    parsedQuestions: (source.parsedQuestions ?? [])
+      .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      .join(" | "),
+    moderatorId: String(cast.moderatorId ?? "editor_v1"),
+    panelistIds: (cast.panelistIds ?? [])
+      .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      .join(","),
+    guestPrompt: String(cast.guestPrompt ?? ""),
+    seriousness: Number(controls.seriousness),
+    humor: Number(controls.humor),
+    confrontation: Number(controls.confrontation),
+    durationMinutes: Number(controls.durationMinutes),
+    status: "draft"
+  };
 
-  return NextResponse.json({ episodeId: episode.id });
+  try {
+    const episode = createEpisode(data);
+    return NextResponse.json({ episodeId: episode.id });
+  } catch (error) {
+    console.error("Episode create failed", {
+      error,
+      payloadPreview: {
+        sourceType: data.sourceType,
+        sourceValueLen: data.sourceValue.length,
+        parsedClaimLen: data.parsedClaim.length,
+        tensionsLen: data.parsedTensions.length,
+        questionsLen: data.parsedQuestions.length,
+        moderatorId: data.moderatorId,
+        panelistIds: data.panelistIds
+      }
+    });
+    return NextResponse.json(
+      {
+        error: "Failed to create episode",
+        detail: error instanceof Error ? error.message : "Unknown error"
+      },
+      { status: 500 }
+    );
+  }
 }

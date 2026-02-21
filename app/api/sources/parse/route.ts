@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { parseSource } from "@/lib/sourceParser";
 
+export const runtime = "nodejs";
+
 const schema = z.object({
   sourceType: z.enum(["url", "text"]),
   value: z.string().min(1)
