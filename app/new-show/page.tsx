@@ -58,7 +58,6 @@ const EMPTY_PARSE: ParseSourceResponse = { claim: "", tensions: [], openQuestion
 export default function NewShowPage() {
   const router = useRouter();
   const [step, setStep] = useState(1);
-  const [sourceType, setSourceType] = useState<SourceType>("url");
   const [value, setValue] = useState("");
   const [parsed, setParsed] = useState<ParseSourceResponse>(EMPTY_PARSE);
   const [moderatorId, setModeratorId] = useState("editor_v1");
@@ -83,6 +82,19 @@ export default function NewShowPage() {
           ? "Heuristic analysis"
           : "Not analyzed";
 
+  function inferSourceType(input: string): SourceType {
+    const trimmed = input.trim();
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+        return "url";
+      }
+      return "text";
+    } catch {
+      return "text";
+    }
+  }
+
   function togglePanel(id: string) {
     setPanelistIds((prev) => {
       if (prev.includes(id)) {
@@ -99,10 +111,11 @@ export default function NewShowPage() {
     setBusy(true);
     setError("");
     try {
+      const inferredSourceType = inferSourceType(value);
       const res = await fetch("/api/sources/parse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sourceType, value })
+        body: JSON.stringify({ sourceType: inferredSourceType, value })
       });
       const data = await res.json();
       if (!res.ok) {
@@ -124,12 +137,13 @@ export default function NewShowPage() {
     setBusy(true);
     setError("");
     try {
+      const inferredSourceType = inferSourceType(value);
       const res = await fetch("/api/episodes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           source: {
-            type: sourceType,
+            type: inferredSourceType,
             value,
             parsedClaim: parsed.claim,
             parsedTensions: parsed.tensions,
@@ -176,15 +190,13 @@ export default function NewShowPage() {
             <div className="stack">
               <h2>Source Intake</h2>
               <label>
-                Source type
-                <select value={sourceType} onChange={(e) => setSourceType(e.target.value as SourceType)}>
-                  <option value="url">URL</option>
-                  <option value="text">Raw text</option>
-                </select>
-              </label>
-              <label>
                 Source
-                <textarea rows={8} value={value} onChange={(e) => setValue(e.target.value)} placeholder="Paste a URL or text excerpt" />
+                <textarea
+                  rows={8}
+                  value={value}
+                  onChange={(e) => setValue(e.target.value)}
+                  placeholder="Paste a URL or text excerpt"
+                />
               </label>
               <div className="row">
                 <button className="btn btn-primary" onClick={analyzeSource} disabled={busy || !value.trim()}>

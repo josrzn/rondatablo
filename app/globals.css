@@ -19,9 +19,9 @@ body {
 }
 
 main {
-  max-width: 980px;
+  max-width: 1480px;
   margin: 0 auto;
-  padding: 2rem 1rem 3rem;
+  padding: 2rem 1.4rem 3rem;
 }
 
 .card {
@@ -277,6 +277,13 @@ main {
   background: #0c5186;
   color: #fff;
   padding: 0.55rem 0.9rem;
+  text-decoration: none;
+}
+
+.cta-link:visited,
+.cta-link:hover,
+.cta-link:focus-visible {
+  color: #fff;
   text-decoration: none;
 }
 
