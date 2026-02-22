@@ -42,6 +42,21 @@ const personaMap: Record<string, string> = {
   editor_warm_v1: "Moderator: calm and incisive, protects coherence without over-talking."
 };
 
+const personaVoiceGuide: Record<string, string> = {
+  accel_v1:
+    "Fast, sharp, energizing. Uses vivid comparisons and clean provocations. Sounds like a product leader under deadline.",
+  inst_realist_v1:
+    "Grounded, dry wit, skeptical. Names failure modes in plain words. Sounds like someone who has handled incidents.",
+  labor_v1:
+    "Human-centered, morally clear, practical. Connects policy to lived consequences. Sounds like a thoughtful organizer-economist.",
+  guest_v1:
+    "Distinct perspective with personality. Brings at least one surprising angle tied to the source.",
+  editor_v1:
+    "Host voice: crisp, curious, and slightly playful. Keeps momentum and audience orientation.",
+  editor_warm_v1:
+    "Host voice: warm, curious, and incisive without grandstanding."
+};
+
 const candidateSchema = z.object({
   text: z.string().min(16).optional(),
   utterance: z.string().min(16).optional(),
@@ -58,6 +73,20 @@ const arbiterSchema = z.object({
 
 function normalizeForCompare(text: string): string {
   return text.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function looksUnreadable(text: string): boolean {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length > 95) {
+    return true;
+  }
+  const jargonHits = (
+    text.match(
+      /\b(99\.9th|percentile|session reconstruction|risk scoring|human-in-the-loop|immutable|attribution headers|auto-approve|escalation)\b/gi
+    ) ?? []
+  ).length;
+  const punctuationDensity = (text.match(/[;:()]/g) ?? []).length;
+  return jargonHits >= 3 || punctuationDensity >= 5;
 }
 
 function isRepeatedBySpeaker(
@@ -116,49 +145,75 @@ async function generateCandidateForSpeaker(input: {
     .map((event) => `${event.speakerId} (${event.type}): ${event.text}`)
     .join("\n");
 
+  const buildPrompt = (plainRewrite: boolean) => ({
+    model: process.env.OPENAI_DEBATE_MODEL || process.env.OPENAI_MODEL,
+    system: [
+      "You are one panelist in a live roundtable show for a smart public audience.",
+      "Sound like a real person, not a whitepaper.",
+      "Be witty, concrete, and thought-provoking without becoming a caricature.",
+      "No corporate jargon. No policy buzzword stacking.",
+      "Output strict JSON only."
+    ].join(" "),
+    user: [
+      `You are speaker: ${input.panelistId}`,
+      `Persona: ${personaMap[input.panelistId] ?? "Panelist."}`,
+      `Voice: ${personaVoiceGuide[input.panelistId] ?? "Distinct, human, clear."}`,
+      `Directive: ${input.directive}`,
+      `Moderator: ${input.moderatorId}`,
+      `Other panelists: ${input.panelistIds.join(", ")}`,
+      input.creatorQuestion ? `Creator follow-up: ${input.creatorQuestion}` : "",
+      `Claim: ${input.claim}`,
+      `Tensions: ${input.tensions}`,
+      `Open questions: ${input.questions}`,
+      input.guestPrompt ? `Guest prompt: ${input.guestPrompt}` : "",
+      "",
+      "Recent transcript:",
+      recentTranscript || "No prior turns.",
+      "",
+      "Return JSON:",
+      "{ text, tags }",
+      "Rules:",
+      "1) 1-2 sentences.",
+      "2) 18-55 words total.",
+      "3) React to one specific prior point by another speaker.",
+      "4) Include one concrete consequence or example people can picture.",
+      "5) Use plain words: if a smart non-specialist would squint, rewrite.",
+      "6) Add one line of personality: wit, analogy, or a sharp question.",
+      "7) Avoid repeating your own previous wording.",
+      plainRewrite
+        ? "8) Rewrite in plainer language. Remove terms like percentile/session reconstruction/risk scoring/human-in-the-loop."
+        : ""
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    temperature: 0.8,
+    maxOutputTokens: 260
+  });
+
   const parsed = await generateJson(
-    {
-      model: process.env.OPENAI_DEBATE_MODEL || process.env.OPENAI_MODEL,
-      system: [
-        "You are one panelist in a live roundtable.",
-        "Write plain-language, concrete, non-caricatural responses.",
-        "Avoid slogan-like abstractions.",
-        "Output strict JSON only."
-      ].join(" "),
-      user: [
-        `You are speaker: ${input.panelistId}`,
-        `Persona: ${personaMap[input.panelistId] ?? "Panelist."}`,
-        `Directive: ${input.directive}`,
-        `Moderator: ${input.moderatorId}`,
-        `Other panelists: ${input.panelistIds.join(", ")}`,
-        input.creatorQuestion ? `Creator follow-up: ${input.creatorQuestion}` : "",
-        `Claim: ${input.claim}`,
-        `Tensions: ${input.tensions}`,
-        `Open questions: ${input.questions}`,
-        input.guestPrompt ? `Guest prompt: ${input.guestPrompt}` : "",
-        "",
-        "Recent transcript:",
-        recentTranscript || "No prior turns.",
-        "",
-        "Return JSON:",
-        "{ text, tags }",
-        "Rules:",
-        "1) 1-3 sentences only.",
-        "2) React to something specific from the recent context.",
-        "3) Include one concrete mechanism, example, or consequence.",
-        "4) Do not repeat one of your prior lines verbatim."
-      ]
-        .filter(Boolean)
-        .join("\n"),
-      temperature: 0.55,
-      maxOutputTokens: 220
-    },
+    buildPrompt(false),
     candidateSchema
   );
   const candidateText = parsed.text ?? parsed.utterance ?? parsed.line;
   if (!candidateText) {
     throw new Error("Candidate JSON missing text/utterance/line");
   }
+
+  if (looksUnreadable(candidateText)) {
+    const rewrite = await generateJson(
+      buildPrompt(true),
+      candidateSchema
+    );
+    const rewritten = rewrite.text ?? rewrite.utterance ?? rewrite.line;
+    if (rewritten && !looksUnreadable(rewritten)) {
+      return {
+        speakerId: input.panelistId,
+        text: rewritten,
+        tags: rewrite.tags
+      };
+    }
+  }
+
   return {
     speakerId: input.panelistId,
     text: candidateText,
@@ -190,7 +245,8 @@ async function arbitrateCandidates(input: {
       model: llmDefaultArbiterModel,
       system: [
         "You are a fast discussion arbiter.",
-        "Select the best next utterance(s) for coherence, novelty, and clarity.",
+        "Select the best next utterance(s) for coherence, novelty, clarity, and listenability.",
+        "Prefer lines that sound like humans in a compelling conversation.",
         "Output strict JSON only."
       ].join(" "),
       user: [
@@ -213,8 +269,9 @@ async function arbitrateCandidates(input: {
         "Rules:",
         "1) picks must contain 1-2 candidates (speaker IDs or candidate numbers).",
         "2) Include moderator only if needed for clarity/conflict/refocus.",
-        "3) Prefer non-repetitive, concrete, understandable utterances.",
-        "4) Keep moderatorText to 1 sentence if included."
+        "3) Prefer non-repetitive, concrete, understandable utterances with personality.",
+        "4) Penalize jargon-heavy and overlong lines.",
+        "5) Keep moderatorText to 1 sentence if included."
       ]
         .filter(Boolean)
         .join("\n"),
