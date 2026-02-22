@@ -27,7 +27,6 @@ export async function generateHostSuggestion(input: {
   }
 
   const recentTranscript = input.episode.events
-    .slice(-10)
     .map((event) => `${event.speakerId} (${event.type}): ${event.text}`)
     .join("\n");
 

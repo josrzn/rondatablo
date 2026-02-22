@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 
 type EventRecord = {
@@ -29,6 +29,15 @@ const ACTIONS = [
   { id: "time_check", label: "Time Check" }
 ] as const;
 
+const SPEAKER_THEME: Record<string, string> = {
+  editor_v1: "speaker-moderator",
+  editor_warm_v1: "speaker-moderator",
+  accel_v1: "speaker-accel",
+  inst_realist_v1: "speaker-realist",
+  labor_v1: "speaker-labor",
+  guest_v1: "speaker-guest"
+};
+
 export default function LivePage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -36,10 +45,12 @@ export default function LivePage() {
   const [episode, setEpisode] = useState<Episode | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [autoRun, setAutoRun] = useState(false);
   const [creatorQuestion, setCreatorQuestion] = useState("");
   const [promptMode, setPromptMode] = useState<
     "followup" | "opening" | "next" | "closing"
   >("followup");
+  const busyRef = useRef(false);
 
   useEffect(() => {
     if (typeof params.id === "string") {
@@ -68,6 +79,31 @@ export default function LivePage() {
     });
   }, [episodeId, loadEpisode]);
 
+  useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
+
+  useEffect(() => {
+    if (!autoRun || !episodeId) {
+      return;
+    }
+    let active = true;
+    const tick = async () => {
+      if (!active || busyRef.current) {
+        return;
+      }
+      await runStep("auto");
+    };
+    tick().catch(() => undefined);
+    const interval = setInterval(() => {
+      tick().catch(() => undefined);
+    }, 3600);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [autoRun, episodeId]);
+
   const unresolvedDisputes = useMemo(() => {
     if (!episode) {
       return [];
@@ -75,29 +111,34 @@ export default function LivePage() {
     return episode.parsedTensions.split("|").map((x) => x.trim());
   }, [episode]);
 
-  async function suggestHostPrompt(mode: "opening" | "next" | "closing") {
-    if (!episodeId) {
-      return;
+  async function requestStep(action: string, question?: string) {
+    const res = await fetch(`/api/episodes/${episodeId}/step`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, creatorQuestion: question })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error ?? "Failed to run step");
     }
-    setBusy(true);
-    setError("");
-    try {
-      const res = await fetch(`/api/episodes/${episodeId}/host-suggestion`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode })
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error ?? "Failed to generate host suggestion");
-      }
-      setPromptMode(mode);
-      setCreatorQuestion(String(data.text ?? ""));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error");
-    } finally {
-      setBusy(false);
+    return data;
+  }
+
+  async function fetchHostSuggestion(mode: "opening" | "next" | "closing") {
+    const res = await fetch(`/api/episodes/${episodeId}/host-suggestion`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error ?? "Failed to generate host suggestion");
     }
+    return String(data.text ?? "");
+  }
+
+  function speakerClass(speakerId: string): string {
+    return SPEAKER_THEME[speakerId] ?? "speaker-default";
   }
 
   async function runStep(action: string, question?: string) {
@@ -107,24 +148,40 @@ export default function LivePage() {
     setBusy(true);
     setError("");
     try {
-      const res = await fetch(`/api/episodes/${episodeId}/step`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, creatorQuestion: question })
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error ?? "Failed to run step");
-      }
+      await requestStep(action, question);
       await loadEpisode();
     } catch (err) {
+      setAutoRun(false);
       setError(err instanceof Error ? err.message : "Unknown error");
     } finally {
       setBusy(false);
     }
   }
 
-  const liveStatus = busy ? "Generating next exchange..." : "Ready";
+  const liveStatus = autoRun
+    ? busy
+      ? "Debate is live..."
+      : "Debate is live (auto)"
+    : busy
+      ? "Generating next exchange..."
+      : "Paused";
+
+  async function suggestHostPrompt(mode: "opening" | "next" | "closing") {
+    if (!episodeId) {
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const text = await fetchHostSuggestion(mode);
+      setCreatorQuestion(text);
+      setPromptMode(mode);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function sendFollowUp() {
     if (!creatorQuestion.trim()) {
@@ -134,17 +191,14 @@ export default function LivePage() {
     setError("");
     try {
       const action = promptMode === "closing" ? "close_show" : "creator_followup";
-      const res = await fetch(`/api/episodes/${episodeId}/step`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action,
-          creatorQuestion
-        })
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error ?? "Failed to send follow-up");
+      await requestStep(action, creatorQuestion);
+      if (promptMode === "closing") {
+        // After the host close prompt, run a couple of close turns to collect parting lines.
+        await requestStep("close_show");
+        await requestStep("close_show");
+        setAutoRun(false);
+      } else {
+        setAutoRun(true);
       }
       setCreatorQuestion("");
       setPromptMode("followup");
@@ -284,9 +338,9 @@ export default function LivePage() {
         <h2>Debate Feed</h2>
         {episode?.events.length ? (
           episode.events.map((event) => (
-            <div className="event" key={event.id}>
-              <p>
-                <strong>{event.speakerId}</strong> ({event.type})
+            <div className={`event ${speakerClass(event.speakerId)}`} key={event.id}>
+              <p className="event-meta">
+                <strong>{event.speakerId}</strong> <span>({event.type})</span>
               </p>
               <p>{event.text}</p>
             </div>

@@ -308,6 +308,87 @@ a:hover {
 .event {
   border-top: 1px solid #e2d8c5;
   padding-top: 0.55rem;
+  border-left: 6px solid #c8bba3;
+  padding-left: 0.7rem;
+  border-radius: 8px;
+  margin-top: 0.3rem;
+}
+
+.event-meta span {
+  color: #5b6b79;
+}
+
+.event-meta strong {
+  display: inline-block;
+  padding: 0.12rem 0.42rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+.speaker-moderator {
+  border-left-color: #0d4f84;
+  background: rgba(13, 79, 132, 0.12);
+}
+
+.speaker-accel {
+  border-left-color: #17624d;
+  background: rgba(23, 98, 77, 0.12);
+}
+
+.speaker-realist {
+  border-left-color: #6b4aa0;
+  background: rgba(107, 74, 160, 0.12);
+}
+
+.speaker-labor {
+  border-left-color: #9a3f2d;
+  background: rgba(154, 63, 45, 0.12);
+}
+
+.speaker-guest {
+  border-left-color: #6b5e35;
+  background: rgba(107, 94, 53, 0.12);
+}
+
+.speaker-default {
+  border-left-color: #6a7d90;
+  background: rgba(106, 125, 144, 0.1);
+}
+
+.speaker-moderator .event-meta strong {
+  color: #0b4775;
+  border-color: #7fb0d8;
+  background: #e8f3ff;
+}
+
+.speaker-accel .event-meta strong {
+  color: #0f5b46;
+  border-color: #8ac7b4;
+  background: #e9f7f2;
+}
+
+.speaker-realist .event-meta strong {
+  color: #5a3f89;
+  border-color: #b89fe0;
+  background: #f0eaff;
+}
+
+.speaker-labor .event-meta strong {
+  color: #7f3527;
+  border-color: #d0a89f;
+  background: #fdeeea;
+}
+
+.speaker-guest .event-meta strong {
+  color: #5d522f;
+  border-color: #cabf9a;
+  background: #f6f2e4;
+}
+
+.speaker-default .event-meta strong {
+  color: #405364;
+  border-color: #b6c4d1;
+  background: #edf2f7;
 }
 
 .mono {

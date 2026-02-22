@@ -71,6 +71,44 @@ const arbiterSchema = z.object({
   tags: z.array(z.string()).max(8).optional().default([])
 });
 
+const STOPWORDS = new Set([
+  "about",
+  "after",
+  "again",
+  "also",
+  "because",
+  "could",
+  "first",
+  "from",
+  "have",
+  "into",
+  "just",
+  "like",
+  "more",
+  "most",
+  "only",
+  "other",
+  "over",
+  "same",
+  "some",
+  "than",
+  "that",
+  "their",
+  "them",
+  "then",
+  "there",
+  "these",
+  "they",
+  "this",
+  "those",
+  "what",
+  "when",
+  "which",
+  "while",
+  "with",
+  "would"
+]);
+
 function normalizeForCompare(text: string): string {
   return text.toLowerCase().replace(/\s+/g, " ").trim();
 }
@@ -99,6 +137,59 @@ function isRepeatedBySpeaker(
     .filter((event) => event.type === "utterance" && event.speakerId === speakerId)
     .slice(-3);
   return recentSameSpeaker.some((event) => normalizeForCompare(event.text) === norm);
+}
+
+function extractFocusKeywords(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 5 && !STOPWORDS.has(token))
+    .slice(0, 12);
+}
+
+function addressesFocus(text: string, focusText?: string): boolean {
+  if (!focusText?.trim()) {
+    return true;
+  }
+  const lower = text.toLowerCase();
+  if (
+    /\b(to your question|you asked|on your point|answering that|to answer)\b/.test(lower)
+  ) {
+    return true;
+  }
+  const keywords = extractFocusKeywords(focusText);
+  if (keywords.length === 0) {
+    return true;
+  }
+  const matches = keywords.filter((keyword) => lower.includes(keyword)).length;
+  return matches >= 1;
+}
+
+function leastRecentlySeenSpeaker(
+  panelistIds: string[],
+  recentEvents: Array<{ speakerId: string; text: string; type: string }>
+): string | null {
+  const utterances = recentEvents.filter((event) => event.type === "utterance");
+  const lastSeen = new Map<string, number>();
+  utterances.forEach((event, idx) => {
+    lastSeen.set(event.speakerId, idx);
+  });
+
+  let chosen: string | null = null;
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const speakerId of panelistIds) {
+    const idx = lastSeen.get(speakerId);
+    if (idx === undefined) {
+      return speakerId;
+    }
+    if (idx < bestScore) {
+      bestScore = idx;
+      chosen = speakerId;
+    }
+  }
+  return chosen;
 }
 
 function normalizeDirective(action: DebateStepAction): Exclude<DebateStepAction, "normal"> {
@@ -133,15 +224,17 @@ async function generateCandidateForSpeaker(input: {
   directive: Exclude<DebateStepAction, "normal">;
   moderatorId: string;
   panelistIds: string[];
+  spokenSpeakerIds: string[];
   claim: string;
   tensions: string;
   questions: string;
   guestPrompt: string;
   recentEvents: Array<{ speakerId: string; text: string; type: string }>;
   creatorQuestion?: string;
+  focusText?: string;
+  latestUtterance?: { speakerId: string; text: string };
 }) {
   const recentTranscript = input.recentEvents
-    .slice(-8)
     .map((event) => `${event.speakerId} (${event.type}): ${event.text}`)
     .join("\n");
 
@@ -161,7 +254,12 @@ async function generateCandidateForSpeaker(input: {
       `Directive: ${input.directive}`,
       `Moderator: ${input.moderatorId}`,
       `Other panelists: ${input.panelistIds.join(", ")}`,
+      `Panelists who have already spoken: ${input.spokenSpeakerIds.join(", ") || "none yet"}`,
       input.creatorQuestion ? `Creator follow-up: ${input.creatorQuestion}` : "",
+      input.focusText ? `Moderator intervention to answer now: ${input.focusText}` : "",
+      input.latestUtterance
+        ? `Latest cast utterance to react to: ${input.latestUtterance.speakerId}: ${input.latestUtterance.text}`
+        : "",
       `Claim: ${input.claim}`,
       `Tensions: ${input.tensions}`,
       `Open questions: ${input.questions}`,
@@ -175,13 +273,16 @@ async function generateCandidateForSpeaker(input: {
       "Rules:",
       "1) 1-2 sentences.",
       "2) 18-55 words total.",
-      "3) React to one specific prior point by another speaker.",
+      input.focusText
+        ? "3) First, directly answer the moderator intervention."
+        : "3) React directly to the latest cast utterance (agree/challenge/refine).",
       "4) Include one concrete consequence or example people can picture.",
       "5) Use plain words: if a smart non-specialist would squint, rewrite.",
       "6) Add one line of personality: wit, analogy, or a sharp question.",
       "7) Avoid repeating your own previous wording.",
+      "8) Do not address or quote a panelist who has not spoken yet in this debate.",
       plainRewrite
-        ? "8) Rewrite in plainer language. Remove terms like percentile/session reconstruction/risk scoring/human-in-the-loop."
+        ? "9) Rewrite in plainer language. Remove terms like percentile/session reconstruction/risk scoring/human-in-the-loop."
         : ""
     ]
       .filter(Boolean)
@@ -231,9 +332,10 @@ async function arbitrateCandidates(input: {
   recentEvents: Array<{ speakerId: string; text: string; type: string }>;
   candidates: Array<{ speakerId: string; text: string; tags?: string[] }>;
   creatorQuestion?: string;
+  focusText?: string;
+  latestUtterance?: { speakerId: string; text: string };
 }) {
   const recentTranscript = input.recentEvents
-    .slice(-8)
     .map((event) => `${event.speakerId} (${event.type}): ${event.text}`)
     .join("\n");
   const candidateText = input.candidates
@@ -254,6 +356,10 @@ async function arbitrateCandidates(input: {
         `Moderator ID: ${input.moderatorId}`,
         `Panelists: ${input.panelistIds.join(", ")}`,
         input.creatorQuestion ? `Creator follow-up: ${input.creatorQuestion}` : "",
+        input.focusText ? `Moderator intervention to prioritize: ${input.focusText}` : "",
+        input.latestUtterance
+          ? `Latest cast utterance for continuity: ${input.latestUtterance.speakerId}: ${input.latestUtterance.text}`
+          : "",
         `Claim: ${input.claim}`,
         `Tensions: ${input.tensions}`,
         `Open questions: ${input.questions}`,
@@ -268,7 +374,9 @@ async function arbitrateCandidates(input: {
         "{ includeModerator, moderatorText, picks, tags }",
         "Rules:",
         "1) picks must contain 1-2 candidates (speaker IDs or candidate numbers).",
-        "2) Include moderator only if needed for clarity/conflict/refocus.",
+        input.focusText
+          ? "2) Prefer candidates that directly answer the moderator intervention."
+          : "2) Prefer candidates that respond to the latest cast utterance.",
         "3) Prefer non-repetitive, concrete, understandable utterances with personality.",
         "4) Penalize jargon-heavy and overlong lines.",
         "5) Keep moderatorText to 1 sentence if included."
@@ -300,6 +408,40 @@ async function generateTurn(input: {
     text: event.text,
     type: event.type
   }));
+  const lastEvent = recentEvents[recentEvents.length - 1];
+  const lastModeratorEvent = [...recentEvents]
+    .reverse()
+    .find((event) => event.type === "moderator");
+  const latestUtteranceEvent = [...recentEvents]
+    .reverse()
+    .find((event) => event.type === "utterance");
+  const focusText =
+    input.creatorQuestion?.trim() ||
+    (lastEvent?.type === "moderator" ? lastModeratorEvent?.text : undefined);
+  const latestUtterance = latestUtteranceEvent
+    ? { speakerId: latestUtteranceEvent.speakerId, text: latestUtteranceEvent.text }
+    : undefined;
+  const spokenSpeakerIds = Array.from(
+    new Set(
+      recentEvents
+        .filter((event) => event.type === "utterance")
+        .map((event) => event.speakerId)
+    )
+  );
+  const forcedModeratorText = input.creatorQuestion?.trim();
+
+  if (forcedModeratorText) {
+    return {
+      utterances: [
+        {
+          speakerId: effectiveModeratorId,
+          type: "moderator",
+          text: forcedModeratorText
+        }
+      ],
+      tags: [`directive:${input.directive}`, "host_injected"]
+    };
+  }
 
   if (!llmAvailable()) {
     throw new Error("OPENAI_API_KEY is missing for live debate generation");
@@ -312,12 +454,15 @@ async function generateTurn(input: {
         directive: input.directive,
         moderatorId: effectiveModeratorId,
         panelistIds,
+        spokenSpeakerIds,
         claim: input.episode.parsedClaim,
         tensions: input.episode.parsedTensions,
         questions: input.episode.parsedQuestions,
         guestPrompt: input.episode.guestPrompt,
         recentEvents,
-        creatorQuestion: input.creatorQuestion
+        creatorQuestion: input.creatorQuestion,
+        focusText,
+        latestUtterance
       })
     )
   );
@@ -341,6 +486,11 @@ async function generateTurn(input: {
     );
   }
 
+  const focusCandidates = candidates.filter((candidate) =>
+    addressesFocus(candidate.text, focusText)
+  );
+  const effectiveCandidates = focusCandidates.length > 0 ? focusCandidates : candidates;
+
   const arbiter = await arbitrateCandidates({
     directive: input.directive,
     moderatorId: effectiveModeratorId,
@@ -349,13 +499,14 @@ async function generateTurn(input: {
     tensions: input.episode.parsedTensions,
     questions: input.episode.parsedQuestions,
     recentEvents,
-    candidates,
-    creatorQuestion: input.creatorQuestion
+    candidates: effectiveCandidates,
+    creatorQuestion: input.creatorQuestion,
+    focusText,
+    latestUtterance
   });
 
-  const bySpeaker = new Map(candidates.map((c) => [c.speakerId, c]));
+  const bySpeaker = new Map(effectiveCandidates.map((c) => [c.speakerId, c]));
   const pickedUtterances: TurnUtterance[] = [];
-
   if (speakerTurnCount === 0 && !arbiter.includeModerator) {
     pickedUtterances.push({
       speakerId: effectiveModeratorId,
@@ -373,7 +524,7 @@ async function generateTurn(input: {
 
   for (const pick of arbiter.picks) {
     const speakerId =
-      typeof pick === "number" ? candidates[pick - 1]?.speakerId : pick;
+      typeof pick === "number" ? effectiveCandidates[pick - 1]?.speakerId : pick;
     if (!speakerId) {
       continue;
     }
@@ -409,8 +560,74 @@ async function generateTurn(input: {
     throw new Error("Arbiter produced only repeated or invalid picks");
   }
 
+  // Guardrail: keep speaker diversity high so one/two voices don't dominate turns.
+  const targetSpeaker = leastRecentlySeenSpeaker(panelistIds, recentEvents);
+  if (targetSpeaker) {
+    const alreadyIncluded = pickedUtterances.some(
+      (item) => item.type === "utterance" && item.speakerId === targetSpeaker
+    );
+    if (!alreadyIncluded) {
+      const targetCandidate = bySpeaker.get(targetSpeaker);
+      if (
+        targetCandidate &&
+        !isRepeatedBySpeaker(targetCandidate.speakerId, targetCandidate.text, recentEvents)
+      ) {
+        const utteranceIndexes = pickedUtterances
+          .map((item, idx) => ({ item, idx }))
+          .filter((x) => x.item.type === "utterance")
+          .map((x) => x.idx);
+        if (utteranceIndexes.length >= 2) {
+          const replaceAt = utteranceIndexes[utteranceIndexes.length - 1];
+          pickedUtterances[replaceAt] = {
+            speakerId: targetCandidate.speakerId,
+            type: "utterance",
+            text: targetCandidate.text
+          };
+        } else {
+          pickedUtterances.push({
+            speakerId: targetCandidate.speakerId,
+            type: "utterance",
+            text: targetCandidate.text
+          });
+        }
+      }
+    }
+  }
+
+  const utteranceOptions = pickedUtterances.filter(
+    (item): item is TurnUtterance => item.type === "utterance"
+  );
+  const priorUtterances = recentEvents.filter((event) => event.type === "utterance");
+  const lastSpeaker = priorUtterances[priorUtterances.length - 1]?.speakerId;
+  const spokenSet = new Set(priorUtterances.map((event) => event.speakerId));
+  const requiredSpeaker = panelistIds.find((id) => !spokenSet.has(id));
+
+  let selected: TurnUtterance | undefined;
+  if (requiredSpeaker) {
+    selected = utteranceOptions.find((item) => item.speakerId === requiredSpeaker);
+    if (!selected) {
+      const forced = bySpeaker.get(requiredSpeaker);
+      if (forced) {
+        selected = {
+          speakerId: forced.speakerId,
+          type: "utterance",
+          text: forced.text
+        };
+      }
+    }
+  }
+  if (!selected && lastSpeaker) {
+    selected = utteranceOptions.find((item) => item.speakerId !== lastSpeaker);
+  }
+  if (!selected) {
+    selected = utteranceOptions[0] ?? pickedUtterances[0];
+  }
+  if (!selected) {
+    throw new Error("No valid utterance selected");
+  }
+
   return {
-    utterances: pickedUtterances.slice(0, 3),
+    utterances: [selected],
     tags: [`directive:${input.directive}`, ...(arbiter.tags ?? [])]
   };
 }
