@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
 
 type EventRecord = {
   id: string;
@@ -24,21 +24,22 @@ type Episode = {
 };
 
 const ACTIONS = [
-  { id: "push_harder", label: "Nudge: Push Harder" },
-  { id: "get_concrete", label: "Nudge: Get Concrete" },
-  { id: "time_check", label: "Nudge: Time Check" },
-  { id: "close_show", label: "Close: Parting Thoughts" }
+  { id: "push_harder", label: "Push Harder" },
+  { id: "get_concrete", label: "Get Concrete" },
+  { id: "time_check", label: "Time Check" }
 ] as const;
 
 export default function LivePage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const [episodeId, setEpisodeId] = useState("");
   const [episode, setEpisode] = useState<Episode | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [autoRun, setAutoRun] = useState(false);
   const [creatorQuestion, setCreatorQuestion] = useState("");
-  const busyRef = useRef(false);
+  const [promptMode, setPromptMode] = useState<
+    "followup" | "opening" | "next" | "closing"
+  >("followup");
 
   useEffect(() => {
     if (typeof params.id === "string") {
@@ -59,10 +60,6 @@ export default function LivePage() {
   }, [episodeId]);
 
   useEffect(() => {
-    busyRef.current = busy;
-  }, [busy]);
-
-  useEffect(() => {
     if (!episodeId) {
       return;
     }
@@ -71,30 +68,6 @@ export default function LivePage() {
     });
   }, [episodeId, loadEpisode]);
 
-  useEffect(() => {
-    if (!autoRun || !episodeId) {
-      return;
-    }
-
-    let active = true;
-    const tick = async () => {
-      if (!active || busyRef.current) {
-        return;
-      }
-      await runStep("auto");
-    };
-
-    tick().catch(() => undefined);
-    const interval = setInterval(() => {
-      tick().catch(() => undefined);
-    }, 4200);
-
-    return () => {
-      active = false;
-      clearInterval(interval);
-    };
-  }, [autoRun, episodeId]);
-
   const unresolvedDisputes = useMemo(() => {
     if (!episode) {
       return [];
@@ -102,7 +75,32 @@ export default function LivePage() {
     return episode.parsedTensions.split("|").map((x) => x.trim());
   }, [episode]);
 
-  async function runStep(action: string) {
+  async function suggestHostPrompt(mode: "opening" | "next" | "closing") {
+    if (!episodeId) {
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/episodes/${episodeId}/host-suggestion`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error ?? "Failed to generate host suggestion");
+      }
+      setPromptMode(mode);
+      setCreatorQuestion(String(data.text ?? ""));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runStep(action: string, question?: string) {
     if (!episodeId) {
       return;
     }
@@ -112,7 +110,7 @@ export default function LivePage() {
       const res = await fetch(`/api/episodes/${episodeId}/step`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action })
+        body: JSON.stringify({ action, creatorQuestion: question })
       });
       const data = await res.json();
       if (!res.ok) {
@@ -120,20 +118,13 @@ export default function LivePage() {
       }
       await loadEpisode();
     } catch (err) {
-      setAutoRun(false);
       setError(err instanceof Error ? err.message : "Unknown error");
     } finally {
       setBusy(false);
     }
   }
 
-  const liveStatus = autoRun
-    ? busy
-      ? "Cast is speaking..."
-      : "Auto mode: waiting for next intervention..."
-    : busy
-      ? "Generating next exchange..."
-      : "Paused";
+  const liveStatus = busy ? "Generating next exchange..." : "Ready";
 
   async function sendFollowUp() {
     if (!creatorQuestion.trim()) {
@@ -142,11 +133,12 @@ export default function LivePage() {
     setBusy(true);
     setError("");
     try {
+      const action = promptMode === "closing" ? "close_show" : "creator_followup";
       const res = await fetch(`/api/episodes/${episodeId}/step`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "creator_followup",
+          action,
           creatorQuestion
         })
       });
@@ -155,6 +147,7 @@ export default function LivePage() {
         throw new Error(data.error ?? "Failed to send follow-up");
       }
       setCreatorQuestion("");
+      setPromptMode("followup");
       await loadEpisode();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");
@@ -167,6 +160,21 @@ export default function LivePage() {
     <div className="stack">
       <div className="card stack">
         <h1>Live Studio</h1>
+        <div className="row">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => router.back()}
+          >
+            Back
+          </button>
+          <Link href="/" className="btn btn-secondary">
+            Home
+          </Link>
+          <Link href={`/export/${episodeId}`} className="btn btn-secondary">
+            Export
+          </Link>
+        </div>
         <p className="mono">{episodeId}</p>
         {episode ? (
           <>
@@ -186,40 +194,79 @@ export default function LivePage() {
         <p>
           <strong>Status:</strong> {liveStatus}
         </p>
-        <div className="row">
-          <button
-            onClick={() => setAutoRun((x) => !x)}
-            disabled={busy}
-          >
-            {autoRun ? "Pause Discussion" : "Start Discussion"}
-          </button>
-          <button onClick={() => runStep("auto")} disabled={busy || autoRun}>
-            Speak Next
-          </button>
-          {ACTIONS.map((action) => (
+        <div className="control-group stack">
+          <div className="action-grid">
             <button
-              key={action.id}
-              onClick={() => runStep(action.id)}
-              disabled={busy || autoRun}
+              type="button"
+              className="btn btn-primary btn-compact"
+              onClick={() => suggestHostPrompt("opening")}
+              disabled={busy}
             >
-              {action.label}
+              Start Discussion
             </button>
-          ))}
-          <Link href={`/export/${episodeId}`}>Go to Export</Link>
+            <button
+              type="button"
+              className="btn btn-secondary btn-compact"
+              onClick={() => suggestHostPrompt("next")}
+              disabled={busy}
+            >
+              Speak Next
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-compact"
+              onClick={() => suggestHostPrompt("closing")}
+              disabled={busy}
+            >
+              End Discussion
+            </button>
+          </div>
+          <div className="action-grid">
+            {ACTIONS.map((action) => (
+              <button
+                type="button"
+                className="btn btn-chip btn-compact"
+                key={action.id}
+                onClick={() => runStep(action.id)}
+                disabled={busy}
+              >
+                {action.label}
+              </button>
+            ))}
+          </div>
         </div>
         <label>
-          Creator follow-up
+          Host prompt
           <textarea
-            rows={2}
+            className="host-prompt-input"
+            rows={4}
             value={creatorQuestion}
-            onChange={(e) => setCreatorQuestion(e.target.value)}
-            placeholder="Ask a direct follow-up question..."
+            onChange={(e) => {
+              setCreatorQuestion(e.target.value);
+              if (!e.target.value.trim()) {
+                setPromptMode("followup");
+              }
+            }}
+            placeholder="Write the host intervention, then submit it to the cast..."
           />
         </label>
-        <button onClick={sendFollowUp} disabled={busy || !creatorQuestion.trim()}>
-          Inject Follow-Up
-        </button>
-        {error ? <p>{error}</p> : null}
+        <div className="row">
+          <button
+            type="button"
+            className="btn btn-primary btn-compact"
+            onClick={sendFollowUp}
+            disabled={busy || !creatorQuestion.trim()}
+          >
+            {promptMode === "opening"
+              ? "Submit Opening"
+              : promptMode === "next"
+                ? "Submit Next Prompt"
+              : promptMode === "closing"
+                ? "Submit Closing"
+                : "Inject Follow-Up"}
+          </button>
+        </div>
+        {error ? <p className="monitor-warning">{error}</p> : null}
       </div>
       <div className="card stack">
         <h2>Unresolved Disputes</h2>

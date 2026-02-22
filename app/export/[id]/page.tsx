@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 
 type ExportResult = {
   exportDir: string;
@@ -11,6 +11,7 @@ type ExportResult = {
 
 export default function ExportPage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
   const [episodeId, setEpisodeId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -45,16 +46,35 @@ export default function ExportPage() {
     <div className="stack">
       <div className="card stack">
         <h1>Export & Publish Pack</h1>
+        <div className="row">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => router.back()}
+          >
+            Back
+          </button>
+          <Link href="/" className="btn btn-secondary">
+            Home
+          </Link>
+        </div>
         <p className="mono">{episodeId}</p>
       </div>
       <div className="card stack">
-        <div className="row">
-          <button onClick={runExport} disabled={busy || !episodeId}>
+        <div className="row control-row">
+          <button
+            type="button"
+            className="btn btn-primary btn-compact"
+            onClick={runExport}
+            disabled={busy || !episodeId}
+          >
             {busy ? "Exporting..." : "Generate Export Pack"}
           </button>
-          <Link href={`/live/${episodeId}`}>Back to Live Studio</Link>
+          <Link href={`/live/${episodeId}`} className="btn btn-secondary btn-compact">
+            Back to Live Studio
+          </Link>
         </div>
-        {error ? <p>{error}</p> : null}
+        {error ? <p className="monitor-warning">{error}</p> : null}
       </div>
       <div className="card stack">
         <h2>Result</h2>

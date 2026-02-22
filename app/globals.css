@@ -143,6 +143,43 @@ main {
   text-decoration: none;
 }
 
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-compact {
+  padding: 0.42rem 0.72rem;
+  border-radius: 12px;
+  font-size: 0.95rem;
+}
+
+.control-row {
+  gap: 0.55rem;
+}
+
+.control-group {
+  gap: 0.45rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid #e3d5bc;
+  border-radius: 12px;
+  background: rgba(255, 251, 243, 0.55);
+}
+
+.action-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.action-grid .btn {
+  width: 100%;
+}
+
+.host-prompt-input {
+  min-height: 7.25rem;
+}
+
 .btn-primary {
   background: #0c5186;
   border-color: #0c5186;
