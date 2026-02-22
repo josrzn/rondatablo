@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 
 type EventRecord = {
@@ -24,10 +24,10 @@ type Episode = {
 };
 
 const ACTIONS = [
-  { id: "normal", label: "Normal Step" },
-  { id: "push_harder", label: "Push Harder" },
-  { id: "get_concrete", label: "Get Concrete" },
-  { id: "time_check", label: "Time Check" }
+  { id: "push_harder", label: "Nudge: Push Harder" },
+  { id: "get_concrete", label: "Nudge: Get Concrete" },
+  { id: "time_check", label: "Nudge: Time Check" },
+  { id: "close_show", label: "Close: Parting Thoughts" }
 ] as const;
 
 export default function LivePage() {
@@ -36,7 +36,9 @@ export default function LivePage() {
   const [episode, setEpisode] = useState<Episode | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [autoRun, setAutoRun] = useState(false);
   const [creatorQuestion, setCreatorQuestion] = useState("");
+  const busyRef = useRef(false);
 
   useEffect(() => {
     if (typeof params.id === "string") {
@@ -57,6 +59,10 @@ export default function LivePage() {
   }, [episodeId]);
 
   useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
+
+  useEffect(() => {
     if (!episodeId) {
       return;
     }
@@ -64,6 +70,30 @@ export default function LivePage() {
       setError(err instanceof Error ? err.message : "Unknown error");
     });
   }, [episodeId, loadEpisode]);
+
+  useEffect(() => {
+    if (!autoRun || !episodeId) {
+      return;
+    }
+
+    let active = true;
+    const tick = async () => {
+      if (!active || busyRef.current) {
+        return;
+      }
+      await runStep("auto");
+    };
+
+    tick().catch(() => undefined);
+    const interval = setInterval(() => {
+      tick().catch(() => undefined);
+    }, 4200);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [autoRun, episodeId]);
 
   const unresolvedDisputes = useMemo(() => {
     if (!episode) {
@@ -90,11 +120,20 @@ export default function LivePage() {
       }
       await loadEpisode();
     } catch (err) {
+      setAutoRun(false);
       setError(err instanceof Error ? err.message : "Unknown error");
     } finally {
       setBusy(false);
     }
   }
+
+  const liveStatus = autoRun
+    ? busy
+      ? "Cast is speaking..."
+      : "Auto mode: waiting for next intervention..."
+    : busy
+      ? "Generating next exchange..."
+      : "Paused";
 
   async function sendFollowUp() {
     if (!creatorQuestion.trim()) {
@@ -144,12 +183,24 @@ export default function LivePage() {
       </div>
       <div className="card stack">
         <h2>Live Controls</h2>
+        <p>
+          <strong>Status:</strong> {liveStatus}
+        </p>
         <div className="row">
+          <button
+            onClick={() => setAutoRun((x) => !x)}
+            disabled={busy}
+          >
+            {autoRun ? "Pause Discussion" : "Start Discussion"}
+          </button>
+          <button onClick={() => runStep("auto")} disabled={busy || autoRun}>
+            Speak Next
+          </button>
           {ACTIONS.map((action) => (
             <button
               key={action.id}
               onClick={() => runStep(action.id)}
-              disabled={busy}
+              disabled={busy || autoRun}
             >
               {action.label}
             </button>
@@ -172,7 +223,15 @@ export default function LivePage() {
       </div>
       <div className="card stack">
         <h2>Unresolved Disputes</h2>
-        <p>{unresolvedDisputes.length > 0 ? unresolvedDisputes.join(" | ") : "-"}</p>
+        {unresolvedDisputes.length > 0 ? (
+          <ul>
+            {unresolvedDisputes.map((item, idx) => (
+              <li key={`${idx}-${item.slice(0, 20)}`}>{item}</li>
+            ))}
+          </ul>
+        ) : (
+          <p>-</p>
+        )}
       </div>
       <div className="card stack">
         <h2>Debate Feed</h2>

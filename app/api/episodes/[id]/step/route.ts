@@ -6,12 +6,14 @@ export const runtime = "nodejs";
 
 const schema = z.object({
   action: z.enum([
+    "auto",
     "normal",
     "push_harder",
     "get_concrete",
     "time_check",
+    "close_show",
     "creator_followup"
-  ]),
+  ]).default("auto"),
   creatorQuestion: z.string().optional()
 });
 
@@ -39,7 +41,7 @@ export async function POST(req: Request, { params }: Params) {
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 404 }
+      { status: 500 }
     );
   }
 }

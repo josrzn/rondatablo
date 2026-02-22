@@ -22,10 +22,12 @@ export type EpisodeCreateInput = {
 };
 
 export type DebateStepAction =
+  | "auto"
   | "normal"
   | "push_harder"
   | "get_concrete"
   | "time_check"
+  | "close_show"
   | "creator_followup";
 
 export type ParseSourceResponse = {

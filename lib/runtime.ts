@@ -6,166 +6,387 @@ import {
 } from "./store";
 import type { DebateStepAction } from "./types";
 import { z } from "zod";
-import { generateJson, llmAvailable } from "./llm";
+import { generateJson, llmAvailable, llmDefaultArbiterModel } from "./llm";
 
 const MODERATOR_ID = "editor_v1";
+const PREFETCH_MAX_AGE_MS = 45_000;
 
-const speakerTemplates: Record<string, string[]> = {
-  accel_v1: [
-    "If capability is compounding, waiting is the highest risk move.",
-    "The marginal team with better tooling will outrun policy cycles.",
-    "The right question is not if this deploys, but who deploys better."
-  ],
-  inst_realist_v1: [
-    "Coordination debt accumulates quietly until one failure makes it obvious.",
-    "We keep assuming institutions can absorb this pace; that assumption is weak.",
-    "Scale without governance is not speed, it is deferred fragility."
-  ],
-  labor_v1: [
-    "Productivity headlines hide who loses bargaining power first.",
-    "If people cannot map a path to relevance, social trust declines fast.",
-    "You are pricing upside and externalizing transition pain."
-  ],
-  guest_v1: [
-    "The surprising part is not the model quality, it is workflow redesign lag.",
-    "Everyone is arguing models while incentives remain unchanged.",
-    "If this is a software factory, who owns quality gates?"
-  ]
+type EpisodeSnapshot = NonNullable<ReturnType<typeof getEpisodeWithEvents>>;
+
+type TurnUtterance = {
+  speakerId: string;
+  type: "moderator" | "utterance";
+  text: string;
 };
 
-const moderatorTemplates: Record<DebateStepAction, string[]> = {
-  normal: [
-    "Make the tradeoff explicit and challenge one assumption directly.",
-    "Name one thing you agree with, then tell me exactly where it breaks."
-  ],
-  push_harder: [
-    "You just dodged the core claim. Give me a falsifiable statement.",
-    "Stop describing. Commit to what happens by next year."
-  ],
-  get_concrete: [
-    "Give a concrete example from an actual team or budget decision.",
-    "Translate that into one metric an operator could track."
-  ],
-  time_check: [
-    "We are short on time. One unresolved dispute each.",
-    "Compress to final commitments and what would change your mind."
-  ],
-  creator_followup: [
-    "Creator follow-up received. Address it directly before broadening scope.",
-    "Answer the creator question in one clear sentence, then defend it."
-  ]
+type GeneratedTurn = {
+  utterances: TurnUtterance[];
+  tags: string[];
 };
 
-function pickNextSpeaker(speakers: string[], count: number): string {
-  if (speakers.length === 0) {
-    return "accel_v1";
-  }
-  return speakers[count % speakers.length] ?? "accel_v1";
-}
+type PrefetchEntry = {
+  status: "generating" | "ready";
+  turn?: GeneratedTurn;
+  createdAt: number;
+  promise?: Promise<void>;
+};
 
-function pickDifferentSpeaker(
-  speakers: string[],
-  excluded: string,
-  count: number
-): string {
-  const filtered = speakers.filter((speaker) => speaker !== excluded);
-  if (filtered.length === 0) {
-    return excluded;
-  }
-  return filtered[count % filtered.length] ?? filtered[0];
-}
-
-function pickLine(lines: string[], count: number): string {
-  if (lines.length === 0) {
-    return "I need a more specific claim before I can respond.";
-  }
-  return lines[count % lines.length] ?? lines[0];
-}
+const prefetchCache = new Map<string, PrefetchEntry>();
 
 const personaMap: Record<string, string> = {
   accel_v1: "Accelerationist: scale, capability compounding, deployment urgency.",
   inst_realist_v1: "Institutional Realist: governance, coordination limits, fragility risks.",
   labor_v1: "Labor Analyst: worker power, inequality, social cohesion, transition costs.",
   guest_v1: "Guest Seat: custom perspective tied to creator prompt.",
-  editor_v1: "The Editor moderator: sharp, tempo-driven, forces specificity.",
-  editor_warm_v1: "Diplomatic moderator: calm but incisive, protects clarity."
+  editor_v1: "Moderator: concise, contextual, intervenes only when needed.",
+  editor_warm_v1: "Moderator: calm and incisive, protects coherence without over-talking."
 };
 
-const turnSchema = z.object({
-  beatType: z.enum(["opening", "clash", "deepen", "commitment", "close"]).optional(),
-  moderatorText: z.string().min(12),
-  speakerId: z.string().min(1),
-  speakerText: z.string().min(16),
-  challengerId: z.string().optional(),
-  challengerText: z.string().min(10).optional(),
-  tags: z.array(z.string()).max(6).optional().default([])
+const candidateSchema = z.object({
+  text: z.string().min(16).optional(),
+  utterance: z.string().min(16).optional(),
+  line: z.string().min(16).optional(),
+  tags: z.array(z.string()).max(5).optional().default([])
 });
 
-async function generateTurnWithLlm(input: {
-  action: DebateStepAction;
+const arbiterSchema = z.object({
+  includeModerator: z.boolean(),
+  moderatorText: z.string().optional(),
+  picks: z.array(z.union([z.string().min(1), z.number().int().min(1)])).min(1).max(2),
+  tags: z.array(z.string()).max(8).optional().default([])
+});
+
+function normalizeForCompare(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function isRepeatedBySpeaker(
+  speakerId: string,
+  text: string,
+  recentEvents: Array<{ speakerId: string; text: string; type: string }>
+): boolean {
+  const norm = normalizeForCompare(text);
+  const recentSameSpeaker = recentEvents
+    .filter((event) => event.type === "utterance" && event.speakerId === speakerId)
+    .slice(-3);
+  return recentSameSpeaker.some((event) => normalizeForCompare(event.text) === norm);
+}
+
+function normalizeDirective(action: DebateStepAction): Exclude<DebateStepAction, "normal"> {
+  if (action === "normal") {
+    return "auto";
+  }
+  return action;
+}
+
+function clearPrefetch(episodeId: string) {
+  prefetchCache.delete(episodeId);
+}
+
+function consumePrefetchedTurn(episodeId: string): GeneratedTurn | null {
+  const entry = prefetchCache.get(episodeId);
+  if (!entry) {
+    return null;
+  }
+  if (Date.now() - entry.createdAt > PREFETCH_MAX_AGE_MS) {
+    prefetchCache.delete(episodeId);
+    return null;
+  }
+  if (entry.status !== "ready" || !entry.turn) {
+    return null;
+  }
+  prefetchCache.delete(episodeId);
+  return entry.turn;
+}
+
+async function generateCandidateForSpeaker(input: {
+  panelistId: string;
+  directive: Exclude<DebateStepAction, "normal">;
+  moderatorId: string;
+  panelistIds: string[];
   claim: string;
   tensions: string;
   questions: string;
-  panelistIds: string[];
-  moderatorId: string;
   guestPrompt: string;
   recentEvents: Array<{ speakerId: string; text: string; type: string }>;
   creatorQuestion?: string;
 }) {
-  if (!llmAvailable()) {
-    return null;
-  }
-
   const recentTranscript = input.recentEvents
     .slice(-8)
     .map((event) => `${event.speakerId} (${event.type}): ${event.text}`)
     .join("\n");
 
-  const personas = [input.moderatorId, ...input.panelistIds]
-    .map((id) => `${id}: ${personaMap[id] ?? "Panel persona"}`)
-    .join("\n");
-
-  const llmTurn = await generateJson(
+  const parsed = await generateJson(
     {
+      model: process.env.OPENAI_DEBATE_MODEL || process.env.OPENAI_MODEL,
       system: [
-        "You generate one high-quality debate beat for a live AI roundtable.",
-        "Output strict JSON only.",
-        "Make it sharp, substantive, and slightly witty without becoming theatrical.",
-        "No generic agreement. Push on assumptions and tradeoffs.",
-        "Avoid repeating prior points; advance the argument."
+        "You are one panelist in a live roundtable.",
+        "Write plain-language, concrete, non-caricatural responses.",
+        "Avoid slogan-like abstractions.",
+        "Output strict JSON only."
       ].join(" "),
       user: [
-        `Action: ${input.action}`,
-        `Moderator ID: ${input.moderatorId}`,
-        `Allowed speaker IDs: ${input.panelistIds.join(", ")}`,
+        `You are speaker: ${input.panelistId}`,
+        `Persona: ${personaMap[input.panelistId] ?? "Panelist."}`,
+        `Directive: ${input.directive}`,
+        `Moderator: ${input.moderatorId}`,
+        `Other panelists: ${input.panelistIds.join(", ")}`,
         input.creatorQuestion ? `Creator follow-up: ${input.creatorQuestion}` : "",
-        `Source claim: ${input.claim}`,
-        `Source tensions: ${input.tensions}`,
+        `Claim: ${input.claim}`,
+        `Tensions: ${input.tensions}`,
         `Open questions: ${input.questions}`,
         input.guestPrompt ? `Guest prompt: ${input.guestPrompt}` : "",
-        "",
-        "Persona notes:",
-        personas,
         "",
         "Recent transcript:",
         recentTranscript || "No prior turns.",
         "",
-        "Return JSON with:",
-        "- beatType: one of opening|clash|deepen|commitment|close",
-        "- moderatorText: one intervention/question",
-        "- speakerId: one allowed panelist id",
-        "- speakerText: a concrete response (2-4 sentences) that addresses another viewpoint",
-        "- challengerId/challengerText: optional short crossfire rebuttal from a different panelist",
-        "- tags: short tags"
+        "Return JSON:",
+        "{ text, tags }",
+        "Rules:",
+        "1) 1-3 sentences only.",
+        "2) React to something specific from the recent context.",
+        "3) Include one concrete mechanism, example, or consequence.",
+        "4) Do not repeat one of your prior lines verbatim."
       ]
         .filter(Boolean)
         .join("\n"),
-      temperature: 0.7
+      temperature: 0.55,
+      maxOutputTokens: 220
     },
-    turnSchema
+    candidateSchema
+  );
+  const candidateText = parsed.text ?? parsed.utterance ?? parsed.line;
+  if (!candidateText) {
+    throw new Error("Candidate JSON missing text/utterance/line");
+  }
+  return {
+    speakerId: input.panelistId,
+    text: candidateText,
+    tags: parsed.tags
+  };
+}
+
+async function arbitrateCandidates(input: {
+  directive: Exclude<DebateStepAction, "normal">;
+  moderatorId: string;
+  panelistIds: string[];
+  claim: string;
+  tensions: string;
+  questions: string;
+  recentEvents: Array<{ speakerId: string; text: string; type: string }>;
+  candidates: Array<{ speakerId: string; text: string; tags?: string[] }>;
+  creatorQuestion?: string;
+}) {
+  const recentTranscript = input.recentEvents
+    .slice(-8)
+    .map((event) => `${event.speakerId} (${event.type}): ${event.text}`)
+    .join("\n");
+  const candidateText = input.candidates
+    .map((c, i) => `${i + 1}. ${c.speakerId}: ${c.text}`)
+    .join("\n");
+
+  return generateJson(
+    {
+      model: llmDefaultArbiterModel,
+      system: [
+        "You are a fast discussion arbiter.",
+        "Select the best next utterance(s) for coherence, novelty, and clarity.",
+        "Output strict JSON only."
+      ].join(" "),
+      user: [
+        `Directive: ${input.directive}`,
+        `Moderator ID: ${input.moderatorId}`,
+        `Panelists: ${input.panelistIds.join(", ")}`,
+        input.creatorQuestion ? `Creator follow-up: ${input.creatorQuestion}` : "",
+        `Claim: ${input.claim}`,
+        `Tensions: ${input.tensions}`,
+        `Open questions: ${input.questions}`,
+        "",
+        "Recent transcript:",
+        recentTranscript || "No prior turns.",
+        "",
+        "Candidate utterances:",
+        candidateText,
+        "",
+        "Return JSON:",
+        "{ includeModerator, moderatorText, picks, tags }",
+        "Rules:",
+        "1) picks must contain 1-2 candidates (speaker IDs or candidate numbers).",
+        "2) Include moderator only if needed for clarity/conflict/refocus.",
+        "3) Prefer non-repetitive, concrete, understandable utterances.",
+        "4) Keep moderatorText to 1 sentence if included."
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      temperature: 0.2,
+      maxOutputTokens: 180
+    },
+    arbiterSchema
+  );
+}
+
+async function generateTurn(input: {
+  episode: EpisodeSnapshot;
+  directive: Exclude<DebateStepAction, "normal">;
+  creatorQuestion?: string;
+}): Promise<GeneratedTurn> {
+  const panelistIds = input.episode.panelistIds
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+  const effectiveModeratorId = input.episode.moderatorId || MODERATOR_ID;
+  const speakerTurnCount = input.episode.events.filter(
+    (event) => event.type === "utterance"
+  ).length;
+  const recentEvents = input.episode.events.map((event) => ({
+    speakerId: event.speakerId,
+    text: event.text,
+    type: event.type
+  }));
+
+  if (!llmAvailable()) {
+    throw new Error("OPENAI_API_KEY is missing for live debate generation");
+  }
+
+  const settled = await Promise.allSettled(
+    panelistIds.map((panelistId) =>
+      generateCandidateForSpeaker({
+        panelistId,
+        directive: input.directive,
+        moderatorId: effectiveModeratorId,
+        panelistIds,
+        claim: input.episode.parsedClaim,
+        tensions: input.episode.parsedTensions,
+        questions: input.episode.parsedQuestions,
+        guestPrompt: input.episode.guestPrompt,
+        recentEvents,
+        creatorQuestion: input.creatorQuestion
+      })
+    )
   );
 
-  return llmTurn;
+  const candidates: Array<{ speakerId: string; text: string; tags?: string[] }> = [];
+  const candidateErrors: string[] = [];
+  settled.forEach((result, index) => {
+    const speaker = panelistIds[index] ?? `speaker_${index + 1}`;
+    if (result.status === "fulfilled") {
+      candidates.push(result.value);
+      return;
+    }
+    const reason =
+      result.reason instanceof Error ? result.reason.message : String(result.reason);
+    candidateErrors.push(`${speaker}: ${reason}`);
+  });
+
+  if (candidates.length === 0) {
+    throw new Error(
+      `All panelist candidate generations failed. ${candidateErrors.join(" | ")}`
+    );
+  }
+
+  const arbiter = await arbitrateCandidates({
+    directive: input.directive,
+    moderatorId: effectiveModeratorId,
+    panelistIds,
+    claim: input.episode.parsedClaim,
+    tensions: input.episode.parsedTensions,
+    questions: input.episode.parsedQuestions,
+    recentEvents,
+    candidates,
+    creatorQuestion: input.creatorQuestion
+  });
+
+  const bySpeaker = new Map(candidates.map((c) => [c.speakerId, c]));
+  const pickedUtterances: TurnUtterance[] = [];
+
+  if (speakerTurnCount === 0 && !arbiter.includeModerator) {
+    pickedUtterances.push({
+      speakerId: effectiveModeratorId,
+      type: "moderator",
+      text:
+        "Today we’re discussing the source claim and why it matters now. Opening question: which assumption fails first in real operations?"
+    });
+  } else if (arbiter.includeModerator && arbiter.moderatorText) {
+    pickedUtterances.push({
+      speakerId: effectiveModeratorId,
+      type: "moderator",
+      text: arbiter.moderatorText
+    });
+  }
+
+  for (const pick of arbiter.picks) {
+    const speakerId =
+      typeof pick === "number" ? candidates[pick - 1]?.speakerId : pick;
+    if (!speakerId) {
+      continue;
+    }
+    const candidate = bySpeaker.get(speakerId);
+    if (!candidate) {
+      continue;
+    }
+    if (isRepeatedBySpeaker(candidate.speakerId, candidate.text, recentEvents)) {
+      continue;
+    }
+    pickedUtterances.push({
+      speakerId: candidate.speakerId,
+      type: "utterance",
+      text: candidate.text
+    });
+  }
+
+  if (pickedUtterances.length === 0) {
+    const backup = candidates.find(
+      (candidate) =>
+        !isRepeatedBySpeaker(candidate.speakerId, candidate.text, recentEvents)
+    );
+    if (backup) {
+      pickedUtterances.push({
+        speakerId: backup.speakerId,
+        type: "utterance",
+        text: backup.text
+      });
+    }
+  }
+
+  if (pickedUtterances.length === 0) {
+    throw new Error("Arbiter produced only repeated or invalid picks");
+  }
+
+  return {
+    utterances: pickedUtterances.slice(0, 3),
+    tags: [`directive:${input.directive}`, ...(arbiter.tags ?? [])]
+  };
+}
+
+function schedulePrefetch(episodeId: string) {
+  const existing = prefetchCache.get(episodeId);
+  if (existing && existing.status === "generating") {
+    return;
+  }
+  const snapshot = getEpisodeWithEvents(episodeId);
+  if (!snapshot) {
+    return;
+  }
+  const entry: PrefetchEntry = {
+    status: "generating",
+    createdAt: Date.now()
+  };
+  const promise = generateTurn({
+    episode: snapshot,
+    directive: "auto"
+  })
+    .then((turn) => {
+      prefetchCache.set(episodeId, {
+        status: "ready",
+        turn,
+        createdAt: Date.now()
+      });
+    })
+    .catch(() => {
+      prefetchCache.delete(episodeId);
+    });
+  entry.promise = promise;
+  prefetchCache.set(episodeId, entry);
 }
 
 export async function runDebateStep(
@@ -174,105 +395,60 @@ export async function runDebateStep(
   creatorQuestion?: string
 ) {
   const episode = getEpisodeWithEvents(episodeId);
-
   if (!episode) {
     throw new Error("Episode not found");
   }
 
-  const panelistIds = episode.panelistIds
-    .split(",")
-    .map((id) => id.trim())
-    .filter(Boolean);
+  const directive = normalizeDirective(action);
+  const canUsePrefetch = directive === "auto" && !creatorQuestion;
 
-  const speakerTurnCount = episode.events.filter((event) => event.type === "utterance").length;
-  const effectiveModeratorId = episode.moderatorId || MODERATOR_ID;
-  const moderatorCount = episode.events.filter(
-    (event) => event.speakerId === effectiveModeratorId
-  ).length;
-  let speakerId = pickNextSpeaker(panelistIds, speakerTurnCount);
-  let baseText = pickLine(speakerTemplates[speakerId] ?? [], speakerTurnCount);
-  let challengerId = pickDifferentSpeaker(panelistIds, speakerId, speakerTurnCount);
-  let challengerText = "";
-  let moderatorText = pickLine(moderatorTemplates[action], moderatorCount);
-  let tags = [`action:${action}`, "beat:clash"];
+  let turn: GeneratedTurn | null = null;
+  let usedPrefetch = false;
 
-  try {
-    const llmTurn = await generateTurnWithLlm({
-      action,
-      claim: episode.parsedClaim,
-      tensions: episode.parsedTensions,
-      questions: episode.parsedQuestions,
-      panelistIds,
-      moderatorId: episode.moderatorId || MODERATOR_ID,
-      guestPrompt: episode.guestPrompt,
-      recentEvents: episode.events.map((event) => ({
-        speakerId: event.speakerId,
-        text: event.text,
-        type: event.type
-      })),
-      creatorQuestion
-    });
-
-    if (llmTurn) {
-      moderatorText = llmTurn.moderatorText;
-      speakerId = panelistIds.includes(llmTurn.speakerId)
-        ? llmTurn.speakerId
-        : speakerId;
-      baseText = llmTurn.speakerText;
-      if (
-        llmTurn.challengerId &&
-        llmTurn.challengerText &&
-        panelistIds.includes(llmTurn.challengerId) &&
-        llmTurn.challengerId !== speakerId
-      ) {
-        challengerId = llmTurn.challengerId;
-        challengerText = llmTurn.challengerText;
-      }
-      const llmTags = llmTurn.tags ?? [];
-      const beatTag = llmTurn.beatType ? [`beat:${llmTurn.beatType}`] : [];
-      if (llmTags.length > 0) {
-        tags = [`action:${action}`, ...beatTag, ...llmTags];
-      } else if (beatTag.length > 0) {
-        tags = [`action:${action}`, ...beatTag];
-      }
+  if (canUsePrefetch) {
+    const prefetched = consumePrefetchedTurn(episodeId);
+    if (prefetched) {
+      turn = prefetched;
+      usedPrefetch = true;
     }
-  } catch {
-    // Keep deterministic fallback.
+  } else {
+    clearPrefetch(episodeId);
+  }
+
+  if (!turn) {
+    try {
+      turn = await generateTurn({
+        episode,
+        directive,
+        creatorQuestion
+      });
+    } catch (error) {
+      throw new Error(
+        `Live LLM turn generation failed: ${error instanceof Error ? error.message : "Unknown error"}`
+      );
+    }
   }
 
   const created = transaction(() => {
-    const moderator = createEvent({
-      episodeId,
-      type: "moderator",
-      speakerId: effectiveModeratorId,
-      text: creatorQuestion
-        ? `${moderatorText} Follow-up: ${creatorQuestion}`
-        : moderatorText,
-      tags: tags.join(",")
-    });
-    const utterance = createEvent({
-      episodeId,
-      type: "utterance",
-      speakerId,
-      text: baseText,
-      tags: tags.join(",")
-    });
-    const challenger = challengerText.trim()
-      ? createEvent({
-          episodeId,
-          type: "crossfire",
-          speakerId: challengerId,
-          text: challengerText,
-          tags: tags.join(",")
-        })
-      : null;
+    const events = turn.utterances.map((item) =>
+      createEvent({
+        episodeId,
+        type: item.type,
+        speakerId: item.speakerId,
+        text: item.text,
+        tags: turn.tags.join(",")
+      })
+    );
     updateEpisodeStatus(episodeId, "live");
-    return { moderator, utterance, challenger };
+    return events;
   });
 
+  if (directive === "auto") {
+    schedulePrefetch(episodeId);
+  }
+
   return {
-    moderator: created.moderator,
-    utterance: created.utterance,
-    challenger: created.challenger
+    events: created,
+    meta: { usedPrefetch }
   };
 }
